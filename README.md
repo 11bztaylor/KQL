@@ -168,3 +168,7 @@
     ThreatSeverity = int(null),
     Type = "CommonSecurityLog"
 }
+
+
+.alter table CommonSecurityLog policy update
+'[{"IsEnabled":true,"Source":"Syslog","Query":"CommonSecurityLog_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
