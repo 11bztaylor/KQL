@@ -1,8 +1,8 @@
 .create-or-alter function
-  with (docstring = 'CEF parsed out of Syslog (ProcessName==CEF) - matches live CommonSecurityLog schema', folder = 'DataExport')
+  with (docstring = 'CEF parsed out of Syslog (MS-aligned filter) - matches live CommonSecurityLog schema', folder = 'DataExport')
   CommonSecurityLog_parse() {
     Syslog
-    | where ProcessName == "CEF"
+    | where ProcessName contains "CEF" or SyslogMessage contains "CEF:0"
     | extend _cef  = iff(SyslogMessage has 'CEF:', substring(SyslogMessage, indexof(SyslogMessage, 'CEF:') + 4), SyslogMessage)
     | extend _cefp = replace_string(_cef, @'\|', '<TZPIPE>')
     | extend _p    = split(_cefp, '|')
