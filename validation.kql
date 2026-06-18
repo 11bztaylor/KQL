@@ -1,0 +1,84 @@
+// =====================================================================================
+// Validation, monitoring & backfill for the PaloAlto_* fan-out
+// Companion to README.md -- these are ad-hoc queries/commands, not deployed objects.
+//
+// Tables: PaloAlto_Traffic (TRAFFIC), PaloAlto_Threat (THREAT), PaloAlto (everything else).
+// =====================================================================================
+
+
+// -------------------------------------------------------------------------------------
+// 1) RECONCILIATION  -- proves no Palo Alto record is lost between Syslog and the tables.
+//    The two counts should match for the same window. A persistent gap = dropped rows
+//    (investigate update-policy failures, see #5).
+// -------------------------------------------------------------------------------------
+let lookback = 1h;
+union
+    ( Syslog
+      | where TimeGenerated > ago(lookback)
+      | where SyslogMessage has "Palo Alto Networks"
+      | summarize Rows = count()
+      | extend Stage = "1_Syslog_PaloAlto" ),
+    ( union
+          (PaloAlto_Traffic | where TimeGenerated > ago(lookback)),
+          (PaloAlto_Threat  | where TimeGenerated > ago(lookback)),
+          (PaloAlto         | where TimeGenerated > ago(lookback))
+      | summarize Rows = count()
+      | extend Stage = "2_PaloAlto_tables" )
+| project Stage, Rows;
+
+
+// -------------------------------------------------------------------------------------
+// 2) FRESHNESS / VOLUME  -- a table whose Latest is stale has quietly stopped receiving.
+// -------------------------------------------------------------------------------------
+union
+    (PaloAlto_Traffic | extend Tbl = "Traffic"),
+    (PaloAlto_Threat  | extend Tbl = "Threat"),
+    (PaloAlto         | extend Tbl = "PaloAlto")
+| where TimeGenerated > ago(24h)
+| summarize Rows = count(), Latest = max(TimeGenerated), MinutesStale = datetime_diff('minute', now(), max(TimeGenerated)) by Tbl
+| order by Tbl asc;
+
+
+// -------------------------------------------------------------------------------------
+// 3) CATCH-ALL BREAKDOWN  -- what is landing in PaloAlto? High-volume LogTypes here
+//    (e.g. SYSTEM, CONFIG) may deserve their own dedicated table.
+// -------------------------------------------------------------------------------------
+PaloAlto
+| where TimeGenerated > ago(24h)
+| summarize Rows = count() by LogType, SubType
+| order by Rows desc;
+
+
+// -------------------------------------------------------------------------------------
+// 4) PARSE HEALTH  -- TRAFFIC rows missing fields that should always be present hint at
+//    a malformed message or an undeclared key throwing off greedy parse-kv.
+// -------------------------------------------------------------------------------------
+PaloAlto_Traffic
+| where TimeGenerated > ago(1h)
+| where isempty(SourceIP) or isempty(DestinationIP) or isempty(DeviceAction)
+| project TimeGenerated, SubType, SourceIP, DestinationIP, DeviceAction, AdditionalExtensions
+| take 50;
+
+
+// -------------------------------------------------------------------------------------
+// 5) UPDATE-POLICY HEALTH  -- confirm each policy is enabled & sourced from Syslog.
+//    Downstream update-policy failures (non-transactional) surface in the cluster's
+//    diagnostic logs -- enable a Diagnostic Setting on the cluster and watch the
+//    "FailedIngestion" / journal entries, or rely on the #1 reconciliation gap.
+// -------------------------------------------------------------------------------------
+.show table PaloAlto_Traffic policy update;
+.show table PaloAlto_Threat  policy update;
+.show table PaloAlto         policy update;
+
+
+// -------------------------------------------------------------------------------------
+// 6) ONE-TIME BACKFILL  -- update policies are forward-only. To populate the tables from
+//    data ALREADY in Syslog, run these once (scope the window to avoid reprocessing
+//    everything). Safe to re-run only if you first clear overlapping extents.
+// -------------------------------------------------------------------------------------
+// .set-or-append PaloAlto_Traffic <|
+//     PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
+// .set-or-append PaloAlto_Threat <|
+//     PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
+// .set-or-append PaloAlto <|
+//     PaloAlto_parse()         | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));

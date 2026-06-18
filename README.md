@@ -1,174 +1,289 @@
+// =====================================================================================
+// Palo Alto Networks (PAN-OS) CEF -> per-log-type tables, parsed out of Syslog (ADX)
+// =====================================================================================
+//
+// GOAL
+//   Fan the raw Syslog CEF stream out into VENDOR + LOG-TYPE specific tables.
+//   This file does Palo Alto:
+//       PaloAlto_Traffic   <- PAN-OS TRAFFIC logs
+//       PaloAlto_Threat    <- PAN-OS THREAT logs (incl. url/virus/spyware/wildfire/file subtypes)
+//       PaloAlto           <- catch-all for every other $type (CONFIG, SYSTEM, HIPMATCH,
+//                             USERID, GLOBALPROTECT, AUTHENTICATION, DECRYPTION, ...)
+//
+// ROUTING / FILTERING  -- validated against a real sample (2026-06):
+//   The actual SyslogMessage arrives WITHOUT the "CEF:" token, e.g.:
+//       0|Palo Alto Networks|PAN-OS|13.5.60-h10|drop|TRAFFIC|1|rt=Jun 15 2026 ... 
+//   so we must NOT filter on "CEF:". We filter on the vendor string, then confirm it
+//   after splitting on '|'. The header is positional:
+//       <ver>|DeviceVendor|DeviceProduct|DeviceVersion|$subtype|$type|Severity|<ext>
+//        _p[0]   _p[1]        _p[2]         _p[3]        _p[4]   _p[5]   _p[6]
+//   The vendor is always _p[1] (no '|' precedes it). $type (TRAFFIC/THREAT/...) is _p[5];
+//   $subtype (drop/start/url/...) is _p[4]. We split tables on _p[5].
+//   (ProcessName is deliberately ignored -- AMA >=1.41 may omit "CEF" from it.)
+//
+// FIELD LABELS  -- this firewall's custom syslog profile maps:
+//       cs1=Rule   cs2=URL Category   cs4=Source Zone   cs5=Destination Zone   cs6=LogProfile
+//       cn1=SessionID   cn2=Packets   cn3=Elapsed time (s)
+//       flexString1=Flags   flexNumber1=Total bytes   externalId=Sequence Number
+//   These were read from a TRAFFIC sample; THREAT/CONFIG profiles should be confirmed
+//   with their own samples. Raw AdditionalExtensions is always retained so nothing is lost.
+//
+// PARSING NOTE
+//   parse-kv runs in greedy mode (values may contain spaces, e.g. rt=Jun 15 2026 ... GMT,
+//   cs5=Destination Zone). Greedy mode requires EVERY key in the message to be declared,
+//   otherwise an undeclared key is absorbed into the previous value. The schema below
+//   therefore also declares the PAN-specific PanOS*/Pan* keys seen in the logs.
+// =====================================================================================
+
+
+// -------------------------------------------------------------------------------------
+// 1) Base parser: Syslog -> Palo Alto CEF, split header, parse the extension.
+// -------------------------------------------------------------------------------------
 .create-or-alter function
-  with (docstring = 'CEF parsed out of Syslog - matches live CommonSecurityLog schema', folder = 'DataExport')
-  CommonSecurityLog_parse() {
+  with (docstring = 'Palo Alto Networks PAN-OS CEF parsed out of Syslog - common projection, routed by log type', folder = 'PaloAlto')
+  PaloAlto_CEF_Parsed() {
     Syslog
-    | where ProcessName contains "CEF" or SyslogMessage contains "CEF:0"
-    | extend _p   = split(SyslogMessage, '|')
+    | where SyslogMessage has "Palo Alto Networks"
+    | extend _p = split(SyslogMessage, '|')
+    | where tostring(_p[1]) == "Palo Alto Networks"
+    | extend
+        DeviceVendor  = tostring(_p[1]),
+        DeviceProduct = tostring(_p[2]),
+        DeviceVersion = tostring(_p[3]),
+        SubType       = tostring(_p[4]),
+        LogType       = toupper(tostring(_p[5])),
+        LogSeverity   = tostring(_p[6])
     | extend _ext = strcat_array(array_slice(_p, 7, -1), '|')
-    | parse-kv _ext as (['app']:string, ['deviceDirection']:string, ['destinationDnsDomain']:string, ['dhost']:string, ['dst']:string, ['dmac']:string, ['dntdom']:string, ['dpt']:int, ['dpid']:int, ['dproc']:string, ['destinationServiceName']:string, ['destinationTranslatedAddress']:string, ['destinationTranslatedPort']:int, ['duid']:string, ['duser']:string, ['dpriv']:string, ['act']:string, ['dvc']:string, ['deviceCustomDate1']:string, ['deviceCustomDate1Label']:string, ['deviceCustomDate2']:string, ['deviceCustomDate2Label']:string, ['cfp1']:real, ['cfp1Label']:string, ['cfp2']:real, ['cfp2Label']:string, ['cfp3']:real, ['cfp3Label']:string, ['cfp4']:real, ['cfp4Label']:string, ['c6a1']:string, ['c6a1Label']:string, ['c6a2']:string, ['c6a2Label']:string, ['c6a3']:string, ['c6a3Label']:string, ['c6a4']:string, ['c6a4Label']:string, ['cn1']:int, ['cn1Label']:string, ['cn2']:int, ['cn2Label']:string, ['cn3']:int, ['cn3Label']:string, ['cs1']:string, ['cs1Label']:string, ['cs2']:string, ['cs2Label']:string, ['cs3']:string, ['cs3Label']:string, ['cs4']:string, ['cs4Label']:string, ['cs5']:string, ['cs5Label']:string, ['cs6']:string, ['cs6Label']:string, ['deviceDnsDomain']:string, ['cat']:string, ['deviceExternalId']:string, ['deviceFacility']:string, ['deviceInboundInterface']:string, ['dvcmac']:string, ['dvchost']:string, ['deviceNtDomain']:string, ['deviceOutboundInterface']:string, ['devicePayloadId']:string, ['dtz']:string, ['deviceTranslatedAddress']:string, ['end']:datetime, ['cnt']:int, ['outcome']:string, ['type']:int, ['externalId']:string, ['fileCreateTime']:string, ['fileHash']:string, ['fileId']:string, ['fileModificationTime']:string, ['fname']:string, ['filePath']:string, ['filePermission']:string, ['fsize']:int, ['fileType']:string, ['flexDate1']:string, ['flexDate1Label']:string, ['flexNumber1']:int, ['flexNumber1Label']:string, ['flexNumber2']:int, ['flexNumber2Label']:string, ['flexString1']:string, ['flexString1Label']:string, ['flexString2']:string, ['flexString2Label']:string, ['msg']:string, ['oldFileCreateTime']:string, ['oldFileHash']:string, ['oldFileId']:string, ['oldFileModificationTime']:string, ['oldFileName']:string, ['oldFilePath']:string, ['oldFilePermission']:string, ['oldFileSize']:int, ['oldFileType']:string, ['dvcpid']:int, ['deviceProcessName']:string, ['proto']:string, ['reason']:string, ['rt']:string, ['in']:long, ['requestClientApplication']:string, ['requestContext']:string, ['requestCookies']:string, ['requestMethod']:string, ['request']:string, ['out']:long, ['sourceDnsDomain']:string, ['shost']:string, ['src']:string, ['smac']:string, ['sntdom']:string, ['spt']:int, ['spid']:int, ['sproc']:string, ['sourceServiceName']:string, ['sourceTranslatedAddress']:string, ['sourceTranslatedPort']:int, ['suid']:string, ['suser']:string, ['spriv']:string, ['start']:datetime)
-        with (pair_delimiter = ' ', kv_delimiter = '=', greedy = true)
+    | parse-kv _ext as (
+        // --- standard CEF keys ---
+        ['act']:string, ['app']:string, ['cat']:string, ['cnt']:int,
+        ['deviceDirection']:string, ['deviceExternalId']:string,
+        ['deviceInboundInterface']:string, ['deviceOutboundInterface']:string,
+        ['destinationServiceName']:string, ['destinationTranslatedAddress']:string, ['destinationTranslatedPort']:int,
+        ['dhost']:string, ['dmac']:string, ['dntdom']:string, ['dpid']:int, ['dpt']:int, ['dproc']:string, ['dpriv']:string,
+        ['dst']:string, ['dtz']:string, ['duid']:string, ['duser']:string,
+        ['dvc']:string, ['dvchost']:string, ['dvcmac']:string,
+        ['end']:string, ['externalId']:string,
+        ['fileHash']:string, ['filePath']:string, ['fname']:string,
+        ['in']:long, ['msg']:string, ['out']:long, ['outcome']:string, ['proto']:string, ['reason']:string,
+        ['request']:string, ['requestContext']:string, ['requestMethod']:string, ['rt']:string,
+        ['shost']:string, ['smac']:string, ['sntdom']:string, ['sourceServiceName']:string,
+        ['sourceTranslatedAddress']:string, ['sourceTranslatedPort']:int,
+        ['spid']:int, ['spriv']:string, ['sproc']:string, ['spt']:int, ['src']:string, ['start']:string, ['suid']:string, ['suser']:string,
+        // --- custom string/number/flex fields (+ their profile labels) ---
+        ['cs1']:string, ['cs1Label']:string, ['cs2']:string, ['cs2Label']:string, ['cs3']:string, ['cs3Label']:string,
+        ['cs4']:string, ['cs4Label']:string, ['cs5']:string, ['cs5Label']:string, ['cs6']:string, ['cs6Label']:string,
+        ['cn1']:int, ['cn1Label']:string, ['cn2']:int, ['cn2Label']:string, ['cn3']:int, ['cn3Label']:string,
+        ['flexString1']:string, ['flexString1Label']:string, ['flexString2']:string, ['flexString2Label']:string,
+        ['flexNumber1']:long, ['flexNumber1Label']:string, ['flexNumber2']:long, ['flexNumber2Label']:string,
+        // --- PAN-OS specific keys (declared so greedy parse-kv keeps correct boundaries) ---
+        ['PanOSPacketsReceived']:long, ['PanOSPacketsSent']:long,
+        ['PanOSSCTPAssocID']:long, ['PanOSSCTPChunks']:long, ['PanOSSCTPChunkSent']:long, ['PanOSSCTPChunksRcv']:long,
+        ['PanOSRuleUUID']:string, ['PanOSHTTP2Con']:int, ['PanLinkChange']:int,
+        ['PanPolicyID']:string, ['PanLinkDetail']:string,
+        ['PanSDWANCluster']:string, ['PanSDWANDevice']:string, ['PanSDWANClustype']:string, ['PanSDWANSite']:string,
+        ['PanSrcEDL']:string, ['PanDstEDL']:string, ['PanGPHostID']:string,
+        ['PanSrcDAG']:string, ['PanDstDAG']:string, ['PanHASessionOwner']:string,
+        // --- additional keys seen in THREAT logs (declared so greedy boundaries hold) ---
+        ['fileId']:string, ['requestClientApplication']:string, ['PanOSHTTPHeader']:string,
+        ['PanOSURLCatList']:string, ['PanDynamicUsrgrp']:string
+      )
+      with (pair_delimiter = ' ', kv_delimiter = '=', greedy = true)
+    | extend AdditionalExtensions = _ext
+  }
+
+
+// -------------------------------------------------------------------------------------
+// 2) TRAFFIC  ->  PaloAlto_Traffic        (validated against a real TRAFFIC sample)
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'PAN-OS TRAFFIC logs projected for the PaloAlto_Traffic table', folder = 'PaloAlto')
+  PaloAlto_Traffic_parse() {
+    PaloAlto_CEF_Parsed()
+    | where LogType == "TRAFFIC"
     | project
-    TimeGenerated,
-    Activity = tostring(_p[5]),
-    AdditionalExtensions = _ext,
-    ApplicationProtocol = ['app'],
-    CollectorHostName = "",
-    CommunicationDirection = ['deviceDirection'],
-    Computer,
-    DestinationDnsDomain = ['destinationDnsDomain'],
-    DestinationHostName = ['dhost'],
-    DestinationIP = ['dst'],
-    DestinationMACAddress = ['dmac'],
-    DestinationNTDomain = ['dntdom'],
-    DestinationPort = ['dpt'],
-    DestinationProcessId = ['dpid'],
-    DestinationProcessName = ['dproc'],
-    DestinationServiceName = ['destinationServiceName'],
-    DestinationTranslatedAddress = ['destinationTranslatedAddress'],
-    DestinationTranslatedPort = ['destinationTranslatedPort'],
-    DestinationUserID = ['duid'],
-    DestinationUserName = ['duser'],
-    DestinationUserPrivileges = ['dpriv'],
-    DeviceAction = ['act'],
-    DeviceAddress = ['dvc'],
-    DeviceCustomDate1 = ['deviceCustomDate1'],
-    DeviceCustomDate1Label = ['deviceCustomDate1Label'],
-    DeviceCustomDate2 = ['deviceCustomDate2'],
-    DeviceCustomDate2Label = ['deviceCustomDate2Label'],
-    DeviceCustomFloatingPoint1 = ['cfp1'],
-    DeviceCustomFloatingPoint1Label = ['cfp1Label'],
-    DeviceCustomFloatingPoint2 = ['cfp2'],
-    DeviceCustomFloatingPoint2Label = ['cfp2Label'],
-    DeviceCustomFloatingPoint3 = ['cfp3'],
-    DeviceCustomFloatingPoint3Label = ['cfp3Label'],
-    DeviceCustomFloatingPoint4 = ['cfp4'],
-    DeviceCustomFloatingPoint4Label = ['cfp4Label'],
-    DeviceCustomIPv6Address1 = ['c6a1'],
-    DeviceCustomIPv6Address1Label = ['c6a1Label'],
-    DeviceCustomIPv6Address2 = ['c6a2'],
-    DeviceCustomIPv6Address2Label = ['c6a2Label'],
-    DeviceCustomIPv6Address3 = ['c6a3'],
-    DeviceCustomIPv6Address3Label = ['c6a3Label'],
-    DeviceCustomIPv6Address4 = ['c6a4'],
-    DeviceCustomIPv6Address4Label = ['c6a4Label'],
-    DeviceCustomNumber1 = ['cn1'],
-    DeviceCustomNumber1Label = ['cn1Label'],
-    DeviceCustomNumber2 = ['cn2'],
-    DeviceCustomNumber2Label = ['cn2Label'],
-    DeviceCustomNumber3 = ['cn3'],
-    DeviceCustomNumber3Label = ['cn3Label'],
-    DeviceCustomString1 = ['cs1'],
-    DeviceCustomString1Label = ['cs1Label'],
-    DeviceCustomString2 = ['cs2'],
-    DeviceCustomString2Label = ['cs2Label'],
-    DeviceCustomString3 = ['cs3'],
-    DeviceCustomString3Label = ['cs3Label'],
-    DeviceCustomString4 = ['cs4'],
-    DeviceCustomString4Label = ['cs4Label'],
-    DeviceCustomString5 = ['cs5'],
-    DeviceCustomString5Label = ['cs5Label'],
-    DeviceCustomString6 = ['cs6'],
-    DeviceCustomString6Label = ['cs6Label'],
-    DeviceDnsDomain = ['deviceDnsDomain'],
-    DeviceEventCategory = ['cat'],
-    DeviceEventClassID = tostring(_p[4]),
-    DeviceExternalID = ['deviceExternalId'],
-    DeviceFacility = ['deviceFacility'],
-    DeviceInboundInterface = ['deviceInboundInterface'],
-    DeviceMacAddress = ['dvcmac'],
-    DeviceName = ['dvchost'],
-    DeviceNtDomain = ['deviceNtDomain'],
-    DeviceOutboundInterface = ['deviceOutboundInterface'],
-    DevicePayloadId = ['devicePayloadId'],
-    DeviceProduct = tostring(_p[2]),
-    DeviceTimeZone = ['dtz'],
-    DeviceTranslatedAddress = ['deviceTranslatedAddress'],
-    DeviceVendor = tostring(_p[1]),
-    DeviceVersion = tostring(_p[3]),
-    EndTime = ['end'],
-    EventCount = ['cnt'],
-    EventOutcome = ['outcome'],
-    EventType = ['type'],
-    ExternalID = int(null),
-    ExtID = ['externalId'],
-    FieldDeviceCustomNumber1 = long(null),
-    FieldDeviceCustomNumber2 = long(null),
-    FieldDeviceCustomNumber3 = long(null),
-    FileCreateTime = ['fileCreateTime'],
-    FileHash = ['fileHash'],
-    FileID = ['fileId'],
-    FileModificationTime = ['fileModificationTime'],
-    FileName = ['fname'],
-    FilePath = ['filePath'],
-    FilePermission = ['filePermission'],
-    FileSize = ['fsize'],
-    FileType = ['fileType'],
-    FlexDate1 = ['flexDate1'],
-    FlexDate1Label = ['flexDate1Label'],
-    FlexNumber1 = ['flexNumber1'],
-    FlexNumber1Label = ['flexNumber1Label'],
-    FlexNumber2 = ['flexNumber2'],
-    FlexNumber2Label = ['flexNumber2Label'],
-    FlexString1 = ['flexString1'],
-    FlexString1Label = ['flexString1Label'],
-    FlexString2 = ['flexString2'],
-    FlexString2Label = ['flexString2Label'],
-    IndicatorThreatType = "",
-    LogSeverity = tostring(_p[6]),
-    MaliciousIP = "",
-    MaliciousIPCountry = "",
-    MaliciousIPLatitude = real(null),
-    MaliciousIPLongitude = real(null),
-    Message = ['msg'],
-    OldFileCreateTime = ['oldFileCreateTime'],
-    OldFileHash = ['oldFileHash'],
-    OldFileID = ['oldFileId'],
-    OldFileModificationTime = ['oldFileModificationTime'],
-    OldFileName = ['oldFileName'],
-    OldFilePath = ['oldFilePath'],
-    OldFilePermission = ['oldFilePermission'],
-    OldFileSize = ['oldFileSize'],
-    OldFileType = ['oldFileType'],
-    OriginalLogSeverity = "",
-    ProcessID = ['dvcpid'],
-    ProcessName = ['deviceProcessName'],
-    Protocol = ['proto'],
-    Reason = ['reason'],
-    ReceiptTime = ['rt'],
-    ReceivedBytes = ['in'],
-    RemoteIP = "",
-    RemotePort = "",
-    ReportReferenceLink = "",
-    RequestClientApplication = ['requestClientApplication'],
-    RequestContext = ['requestContext'],
-    RequestCookies = ['requestCookies'],
-    RequestMethod = ['requestMethod'],
-    RequestURL = ['request'],
-    SentBytes = ['out'],
-    SimplifiedDeviceAction = "",
-    SourceDnsDomain = ['sourceDnsDomain'],
-    SourceHostName = ['shost'],
-    SourceIP = ['src'],
-    SourceMACAddress = ['smac'],
-    SourceNTDomain = ['sntdom'],
-    SourcePort = ['spt'],
-    SourceProcessId = ['spid'],
-    SourceProcessName = ['sproc'],
-    SourceServiceName = ['sourceServiceName'],
-    SourceSystem = "",
-    SourceTranslatedAddress = ['sourceTranslatedAddress'],
-    SourceTranslatedPort = ['sourceTranslatedPort'],
-    SourceUserID = ['suid'],
-    SourceUserName = ['suser'],
-    SourceUserPrivileges = ['spriv'],
-    StartTime = ['start'],
-    TenantId = guid(null),
-    ThreatConfidence = "",
-    ThreatDescription = "",
-    ThreatSeverity = int(null),
-    Type = "CommonSecurityLog"
-}
+        TimeGenerated,
+        DeviceVendor,
+        DeviceProduct,
+        DeviceVersion,
+        LogType,
+        SubType,
+        LogSeverity,
+        Computer,
+        DeviceName                   = ['dvchost'],
+        FirewallSerial               = ['deviceExternalId'],
+        SourceIP                     = ['src'],
+        SourcePort                   = ['spt'],
+        DestinationIP                = ['dst'],
+        DestinationPort              = ['dpt'],
+        Protocol                     = ['proto'],
+        ApplicationProtocol          = ['app'],
+        DeviceAction                 = ['act'],
+        SourceUserName               = ['suser'],
+        DestinationUserName          = ['duser'],
+        SourceTranslatedAddress      = ['sourceTranslatedAddress'],
+        SourceTranslatedPort         = ['sourceTranslatedPort'],
+        DestinationTranslatedAddress = ['destinationTranslatedAddress'],
+        DestinationTranslatedPort    = ['destinationTranslatedPort'],
+        DeviceInboundInterface       = ['deviceInboundInterface'],
+        DeviceOutboundInterface      = ['deviceOutboundInterface'],
+        ReceivedBytes                = ['in'],
+        SentBytes                    = ['out'],
+        TotalBytes                   = ['flexNumber1'],   // flexNumber1Label=Total bytes
+        PacketCount                  = ['cn2'],           // cn2Label=Packets
+        EventCount                   = ['cnt'],
+        ElapsedTimeSec               = ['cn3'],           // cn3Label=Elapsed time in seconds
+        SessionID                    = ['cn1'],           // cn1Label=SessionID
+        SequenceNumber               = ['externalId'],
+        RuleName                     = ['cs1'],           // cs1Label=Rule
+        URLCategory                  = ['cs2'],           // cs2Label=URL Category
+        SourceZone                   = ['cs4'],           // cs4Label=Source Zone
+        DestinationZone              = ['cs5'],           // cs5Label=Destination Zone
+        LogProfile                   = ['cs6'],           // cs6Label=LogProfile
+        Flags                        = ['flexString1'],   // flexString1Label=Flags
+        RuleUUID                     = ['PanOSRuleUUID'],
+        Reason                       = ['reason'],
+        Category                     = ['cat'],
+        StartTime                    = ['start'],         // raw PAN format "Mon dd yyyy HH:mm:ss GMT"
+        ReceiptTime                  = ['rt'],            // raw PAN format
+        AdditionalExtensions
+  }
+
+.create table PaloAlto_Traffic (
+    TimeGenerated:datetime, DeviceVendor:string, DeviceProduct:string, DeviceVersion:string,
+    LogType:string, SubType:string, LogSeverity:string, Computer:string, DeviceName:string,
+    FirewallSerial:string, SourceIP:string, SourcePort:int, DestinationIP:string, DestinationPort:int,
+    Protocol:string, ApplicationProtocol:string, DeviceAction:string, SourceUserName:string,
+    DestinationUserName:string, SourceTranslatedAddress:string, SourceTranslatedPort:int,
+    DestinationTranslatedAddress:string, DestinationTranslatedPort:int, DeviceInboundInterface:string,
+    DeviceOutboundInterface:string, ReceivedBytes:long, SentBytes:long, TotalBytes:long, PacketCount:int,
+    EventCount:int, ElapsedTimeSec:int, SessionID:int, SequenceNumber:string, RuleName:string,
+    URLCategory:string, SourceZone:string, DestinationZone:string, LogProfile:string, Flags:string,
+    RuleUUID:string, Reason:string, Category:string, StartTime:string, ReceiptTime:string,
+    AdditionalExtensions:string
+)
+
+.alter table PaloAlto_Traffic policy update
+'[{"IsEnabled":true,"Source":"Syslog","Query":"PaloAlto_Traffic_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
 
 
-.alter table CommonSecurityLog policy update
-'[{"IsEnabled":true,"Source":"Syslog","Query":"CommonSecurityLog_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
+// -------------------------------------------------------------------------------------
+// 3) THREAT  ->  PaloAlto_Threat   (subtypes: url, virus, spyware, vulnerability, wildfire, file, data, ...)
+//    NOTE: mappings reuse the TRAFFIC profile labels. Confirm with a real THREAT sample;
+//          declare any extra PanOS* keys it carries in PaloAlto_CEF_Parsed() above.
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'PAN-OS THREAT logs projected for the PaloAlto_Threat table', folder = 'PaloAlto')
+  PaloAlto_Threat_parse() {
+    PaloAlto_CEF_Parsed()
+    | where LogType == "THREAT"
+    | project
+        TimeGenerated,
+        DeviceVendor,
+        DeviceProduct,
+        DeviceVersion,
+        LogType,
+        SubType,
+        LogSeverity,
+        Computer,
+        DeviceName               = ['dvchost'],
+        FirewallSerial           = ['deviceExternalId'],
+        SourceIP                 = ['src'],
+        SourcePort               = ['spt'],
+        DestinationIP            = ['dst'],
+        DestinationPort          = ['dpt'],
+        Protocol                 = ['proto'],
+        ApplicationProtocol      = ['app'],
+        DeviceAction             = ['act'],
+        CommunicationDirection   = ['deviceDirection'],
+        Direction                = ['flexString2'],   // flexString2Label=Direction (client-to-server/...)
+        SourceUserName           = ['suser'],
+        DestinationUserName      = ['duser'],
+        RequestURL               = trim('"', tostring(['request'])),
+        RequestMethod            = ['requestMethod'],
+        RequestClientApplication = ['requestClientApplication'],
+        RequestContext           = ['requestContext'],
+        FileName                 = ['fname'],
+        FilePath                 = ['filePath'],
+        FileHash                 = ['fileHash'],
+        FileID                   = ['fileId'],
+        ThreatCategory           = ['cat'],
+        URLCategory              = ['cs2'],           // cs2Label=URL Category
+        URLCategoryList          = trim('"', tostring(['PanOSURLCatList'])),
+        Message                  = ['msg'],
+        SessionID                = ['cn1'],           // cn1Label=SessionID
+        SequenceNumber           = ['externalId'],
+        RuleName                 = ['cs1'],           // cs1Label=Rule
+        SourceZone               = ['cs4'],           // cs4Label=Source Zone
+        DestinationZone          = ['cs5'],           // cs5Label=Destination Zone
+        LogProfile               = ['cs6'],           // cs6Label=LogProfile
+        Flags                    = ['flexString1'],   // flexString1Label=Flags
+        RuleUUID                 = ['PanOSRuleUUID'],
+        ReceiptTime              = ['rt'],
+        AdditionalExtensions
+  }
+
+.create table PaloAlto_Threat (
+    TimeGenerated:datetime, DeviceVendor:string, DeviceProduct:string, DeviceVersion:string,
+    LogType:string, SubType:string, LogSeverity:string, Computer:string, DeviceName:string,
+    FirewallSerial:string, SourceIP:string, SourcePort:int, DestinationIP:string, DestinationPort:int,
+    Protocol:string, ApplicationProtocol:string, DeviceAction:string, CommunicationDirection:string,
+    Direction:string, SourceUserName:string, DestinationUserName:string, RequestURL:string,
+    RequestMethod:string, RequestClientApplication:string, RequestContext:string, FileName:string,
+    FilePath:string, FileHash:string, FileID:string, ThreatCategory:string, URLCategory:string,
+    URLCategoryList:string, Message:string, SessionID:int, SequenceNumber:string, RuleName:string,
+    SourceZone:string, DestinationZone:string, LogProfile:string, Flags:string, RuleUUID:string,
+    ReceiptTime:string, AdditionalExtensions:string
+)
+
+.alter table PaloAlto_Threat policy update
+'[{"IsEnabled":true,"Source":"Syslog","Query":"PaloAlto_Threat_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
+
+
+// -------------------------------------------------------------------------------------
+// 3) CATCH-ALL  ->  PaloAlto   (every $type except TRAFFIC/THREAT: CONFIG, SYSTEM,
+//    HIPMATCH, USERID, GLOBALPROTECT, ... -- nothing is dropped). No CONFIG sample was
+//    available to break out a dedicated audit table, so config-change detail lives here;
+//    the full raw extension is kept in AdditionalExtensions so it stays fully queryable.
+//    Promote any high-volume LogType (e.g. SYSTEM) to its own table later by excluding it
+//    here and copying the TRAFFIC pattern.
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'PAN-OS logs of any type other than TRAFFIC/THREAT (CONFIG, SYSTEM, HIPMATCH, USERID, GLOBALPROTECT, ...)', folder = 'PaloAlto')
+  PaloAlto_parse() {
+    PaloAlto_CEF_Parsed()
+    | where LogType !in ("TRAFFIC", "THREAT")
+    | project
+        TimeGenerated,
+        DeviceVendor,
+        DeviceProduct,
+        DeviceVersion,
+        LogType,
+        SubType,
+        LogSeverity,
+        Computer,
+        DeviceName          = ['dvchost'],
+        FirewallSerial      = ['deviceExternalId'],
+        SourceIP            = ['src'],
+        DestinationIP       = ['dst'],
+        UserName            = ['suser'],   // for CONFIG logs this is the administrator
+        DestinationUserName = ['duser'],
+        DeviceAction        = ['act'],     // for CONFIG logs this is the command (add/edit/commit/...)
+        EventCategory       = ['cat'],
+        Message             = ['msg'],
+        Result              = ['outcome'],
+        SequenceNumber      = ['externalId'],
+        ReceiptTime         = ['rt'],
+        AdditionalExtensions
+  }
+
+.create table PaloAlto (
+    TimeGenerated:datetime, DeviceVendor:string, DeviceProduct:string, DeviceVersion:string,
+    LogType:string, SubType:string, LogSeverity:string, Computer:string, DeviceName:string,
+    FirewallSerial:string, SourceIP:string, DestinationIP:string, UserName:string,
+    DestinationUserName:string, DeviceAction:string, EventCategory:string, Message:string,
+    Result:string, SequenceNumber:string, ReceiptTime:string, AdditionalExtensions:string
+)
+
+.alter table PaloAlto policy update
+'[{"IsEnabled":true,"Source":"Syslog","Query":"PaloAlto_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
