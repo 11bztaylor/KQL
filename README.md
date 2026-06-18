@@ -21,10 +21,9 @@ one table and nothing is silently dropped.
 | File | What it is |
 |------|------------|
 | [`PaloAlto_CEF.kql`](paloalto/deploy/PaloAlto_CEF.kql) | **The deployable KQL** — base parser, per-table projection functions, `.create table`, and update policies. |
-| [`PaloAlto_tests.kql`](paloalto/tests/PaloAlto_tests.kql) | Parser characterization tests: mirror the deployed routing/header parse on sample messages, assert field extraction, and check the non-Palo-Alto-excluded invariant. Touches no tables. |
 | [`enrichment.kql`](paloalto/enrichment/enrichment.kql) | Query-time enrichment: GeoIP, severity/direction/action labels, internal/external scope, session-end-reason descriptions, decoded session flags. Raw tables stay untouched. |
 | [`validation.kql`](paloalto/ops/validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
-| [`TESTING.md`](docs/TESTING.md) | Deploy → test → verify → backfill runbook. |
+| [`TESTING.md`](docs/TESTING.md) | Deploy → verify → backfill runbook. |
 | [`SIDEQUEST.kql`](paloalto/backfill/SIDEQUEST.kql) | One-off historical backfill: maps a CommonSecurityLog-shaped Search Job table (Palo Alto THREAT only) into `PaloAlto_Threat`, tagged and reversible. |
 | [`shared/shared.kql`](shared/shared.kql) | Vendor-agnostic helpers: `Shared_HexToLong`, `Shared_SeverityLabel`, `Shared_Direction`, `Shared_IpScope`. Deploy **before** enrichment. |
 
@@ -40,7 +39,6 @@ docs/TESTING.md
 paloalto/
   deploy/PaloAlto_CEF.kql        functions + tables + update policies (one ordered file)
   enrichment/enrichment.kql      query-time enrichment views
-  tests/PaloAlto_tests.kql       parser tests
   ops/validation.kql             monitoring / reconciliation / drift / backfill
   backfill/SIDEQUEST.kql         one-off historical THREAT backfill
 shared/shared.kql                vendor-agnostic helpers (hex, severity, direction, ip-scope)
@@ -110,9 +108,8 @@ git clone https://github.com/11bztaylor/KQL.git
 cd KQL
 ```
 
-1. **Test the parser** (no deployment, zero risk): run [`PaloAlto_tests.kql`](paloalto/tests/PaloAlto_tests.kql) — expect 4 rows, all `Passed = true`.
-2. **Deploy**: run [`PaloAlto_CEF.kql`](paloalto/deploy/PaloAlto_CEF.kql) top-to-bottom on your ADX database.
-3. **Verify**: once live data flows, run the reconciliation query in [`validation.kql`](paloalto/ops/validation.kql).
+1. **Deploy**: run [`PaloAlto_CEF.kql`](paloalto/deploy/PaloAlto_CEF.kql) top-to-bottom on your ADX database (run [`shared/shared.kql`](shared/shared.kql) first if you'll use enrichment).
+2. **Verify**: once live data flows, run the reconciliation query in [`validation.kql`](paloalto/ops/validation.kql).
 
 See [`TESTING.md`](docs/TESTING.md) for the full runbook, including backfilling existing `Syslog`
 data (update policies are forward-only).
