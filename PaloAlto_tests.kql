@@ -1,0 +1,103 @@
+// =====================================================================================
+// PaloAlto_tests.kql  --  self-contained parser test harness
+// =====================================================================================
+// WHAT THIS DOES
+//   Runs the exact PaloAlto_CEF_Parsed() parse logic against the three REAL sample
+//   messages captured from production (2x TRAFFIC, 1x THREAT/url) and asserts that the
+//   key fields land in the right columns with the expected values.
+//
+// HOW TO RUN
+//   Paste this whole file into an ADX / Kusto query window and run it. It touches NO
+//   tables and deploys nothing -- safe to run anywhere, before or after deploying
+//   README.md. Every row in the result should show Passed == true and an empty Details.
+//   A non-empty Details lists which field(s) failed for that sample.
+// =====================================================================================
+
+// --- the three real samples (already sanitized: omit / 666 placeholders) -------------
+let Samples = datatable(TestName:string, SyslogMessage:string)
+[
+  "TRAFFIC_drop_13.5",
+    "0|Palo Alto Networks|PAN-OS|13.5.60-h10|drop|TRAFFIC|1|rt=Jun 15 2026 14:58:03 GMT deviceExternalId=066606000666 src=666.666.66.6 dst=666.666.666.666 sourceTranslatedAddress=0.0.0.0 destinationTranslatedAddress=0.0.0.0 cs1Label=Rule cs1=SgnInDenyByDefault-1 suser= duser= app=not-applicable cs4Label=Source Zone cs4=DocSgn cs5Label=Destination Zone cs5=DocSgn deviceInboundInterface=ae5 deviceOutboundInterface= cs6Label=LogProfile cs6=ABC1-UG-LA-0017 cn1Label=SessionID cn1=0 cnt=1 spt=4113 dpt=7680 sourceTranslatedPort=0 destinationTranslatedPort=0 flexString1Label=Flags flexString1=0x0 proto=tcp act=drop flexNumber1Label=Total bytes flexNumber1=66 in=0 out=66 cn2Label=Packets cn2=1 PanOSPacketsReceived=0 PanOSPacketsSent=1 start=Jun 15 2026 14:58:03 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=any externalId=32487329847983375 reason=policy-deny dvchost=OMIT cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=OMIT PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
+  "TRAFFIC_allow_10.1",
+    "0|Palo Alto Networks|PAN-OS|10.1.10-i11|end|TRAFFIC|1|rt=Jun 18 2026 19:51:32 GMT deviceExternalId=23432432423 src=OMIT dst=OMIT sourceTranslatedAddress=OMIT destinationTranslatedAddress=OMIT cs1Label=Rule cs1=rulename suser=user@domain.co duser= app=ssl cs4Label=Source Zone cs4=ZONE cs5Label=Destination Zone cs5=DocSgn deviceInboundInterface=ae7 deviceOutboundInterface=ae3 cs6Label=LogProfile cs6=PROFILENAME cn1Label=SessionID cn1=2546623 cnt=1 spt=54655 dpt=443 sourceTranslatedPort=54902 destinationTranslatedPort=443 flexString1Label=Flags flexString1=0x54340d proto=tcp act=allow flexNumber1Label=Total bytes flexNumber1=2080 in=60 out=2020 cn2Label=Packets cn2=4 PanOSPacketsReceived=1 PanOSPacketsSent=4 start=Jun 18 2026 19:51:32 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=web-advertisements externalId=2432342423234 reason=threat dvchost=NAME cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=OMIT PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
+  "THREAT_url_10.1",
+    "0|Palo Alto Networks|PAN-OS|10.1.10-h10|url|THREAT|1|rt=Jun 18 2026 20:02:34 GMT deviceExternalId=4354534345 src=omit dst=omit sourceTranslatedAddress=omit destinationTranslatedAddress=omit cs1Label=Rule cs1=omit00-1 suser=omit@AGY.YE.gov duser= app=ssl cs4Label=Source Zone cs4=omit cs5Label=Destination Zone cs5=DocSgn deviceInboundInterface=ae7 deviceOutboundInterface=ae1 cs6Label=LogProfile cs6=omit cn1Label=SessionID cn1=500741 cnt=1 spt=65171 dpt=443 sourceTranslatedPort=36856 destinationTranslatedPort=443 flexString1Label=Flags flexString1=omit proto=tcp act=alert request=\"mobile.events.data.microsoft.com/\" cs2Label=URL Category cs2=omit0365 flexString2Label=Direction flexString2=client-to-server externalId=omit requestContext= cat=(9999) fileId=0 requestMethod= requestClientApplication= dvchost=omit3440 PanOSHTTPHeader= PanOSRuleUUID=omit PanOSURLCatList=\"SharedDocDefenderUrl,computer-and-internet-info,low-risk\" PanOSHTTP2Con=0 PanDynamicUsrgrp="
+];
+
+// --- expected values (assertions) ----------------------------------------------------
+let Expected = datatable(TestName:string, ExpLogType:string, ExpSubType:string, ExpVersion:string, ExpDPt:int, ExpAction:string, ExpRule:string, ExpUrlCat:string, ExpSession:long, ExpRequest:string, ExpDirection:string)
+[
+  "TRAFFIC_drop_13.5",  "TRAFFIC", "drop", "13.5.60-h10", 7680, "drop",  "SgnInDenyByDefault-1", "any",               0,       "",                                  "",
+  "TRAFFIC_allow_10.1", "TRAFFIC", "end",  "10.1.10-i11", 443,  "allow", "rulename",             "web-advertisements", 2546623, "",                                  "",
+  "THREAT_url_10.1",    "THREAT",  "url",  "10.1.10-h10", 443,  "alert", "omit00-1",             "omit0365",           500741,  "mobile.events.data.microsoft.com/", "client-to-server"
+];
+
+// --- parse (mirrors PaloAlto_CEF_Parsed() in README.md) ------------------------------
+Samples
+| extend _p = split(SyslogMessage, '|')
+| where tostring(_p[1]) == "Palo Alto Networks"
+| extend DeviceVendor = tostring(_p[1]), DeviceProduct = tostring(_p[2]), DeviceVersion = tostring(_p[3]),
+         SubType = tostring(_p[4]), LogType = toupper(tostring(_p[5])), LogSeverity = tostring(_p[6])
+| extend _ext = strcat_array(array_slice(_p, 7, -1), '|')
+| parse-kv _ext as (
+    ['act']:string, ['app']:string, ['cat']:string, ['cnt']:int,
+    ['deviceDirection']:string, ['deviceExternalId']:string,
+    ['deviceInboundInterface']:string, ['deviceOutboundInterface']:string,
+    ['destinationServiceName']:string, ['destinationTranslatedAddress']:string, ['destinationTranslatedPort']:int,
+    ['dhost']:string, ['dmac']:string, ['dntdom']:string, ['dpid']:int, ['dpt']:int, ['dproc']:string, ['dpriv']:string,
+    ['dst']:string, ['dtz']:string, ['duid']:string, ['duser']:string,
+    ['dvc']:string, ['dvchost']:string, ['dvcmac']:string,
+    ['end']:string, ['externalId']:string,
+    ['fileHash']:string, ['filePath']:string, ['fname']:string,
+    ['in']:long, ['msg']:string, ['out']:long, ['outcome']:string, ['proto']:string, ['reason']:string,
+    ['request']:string, ['requestContext']:string, ['requestMethod']:string, ['rt']:string,
+    ['shost']:string, ['smac']:string, ['sntdom']:string, ['sourceServiceName']:string,
+    ['sourceTranslatedAddress']:string, ['sourceTranslatedPort']:int,
+    ['spid']:int, ['spriv']:string, ['sproc']:string, ['spt']:int, ['src']:string, ['start']:string, ['suid']:string, ['suser']:string,
+    ['cs1']:string, ['cs1Label']:string, ['cs2']:string, ['cs2Label']:string, ['cs3']:string, ['cs3Label']:string,
+    ['cs4']:string, ['cs4Label']:string, ['cs5']:string, ['cs5Label']:string, ['cs6']:string, ['cs6Label']:string,
+    ['cn1']:int, ['cn1Label']:string, ['cn2']:int, ['cn2Label']:string, ['cn3']:int, ['cn3Label']:string,
+    ['flexString1']:string, ['flexString1Label']:string, ['flexString2']:string, ['flexString2Label']:string,
+    ['flexNumber1']:long, ['flexNumber1Label']:string, ['flexNumber2']:long, ['flexNumber2Label']:string,
+    ['PanOSPacketsReceived']:long, ['PanOSPacketsSent']:long,
+    ['PanOSSCTPAssocID']:long, ['PanOSSCTPChunks']:long, ['PanOSSCTPChunkSent']:long, ['PanOSSCTPChunksRcv']:long,
+    ['PanOSRuleUUID']:string, ['PanOSHTTP2Con']:int, ['PanLinkChange']:int,
+    ['PanPolicyID']:string, ['PanLinkDetail']:string,
+    ['PanSDWANCluster']:string, ['PanSDWANDevice']:string, ['PanSDWANClustype']:string, ['PanSDWANSite']:string,
+    ['PanSrcEDL']:string, ['PanDstEDL']:string, ['PanGPHostID']:string,
+    ['PanSrcDAG']:string, ['PanDstDAG']:string, ['PanHASessionOwner']:string,
+    ['fileId']:string, ['requestClientApplication']:string, ['PanOSHTTPHeader']:string,
+    ['PanOSURLCatList']:string, ['PanDynamicUsrgrp']:string
+  )
+  with (pair_delimiter = ' ', kv_delimiter = '=', greedy = true)
+| project
+    TestName, LogType, SubType, DeviceVendor, DeviceProduct, DeviceVersion,
+    SourceIP = ['src'], DestinationIP = ['dst'], SourcePort = ['spt'], DestinationPort = ['dpt'],
+    Protocol = ['proto'], ApplicationProtocol = ['app'], DeviceAction = ['act'],
+    RuleName = ['cs1'], URLCategory = ['cs2'], SourceZone = ['cs4'], DestinationZone = ['cs5'], LogProfile = ['cs6'],
+    SessionID = ['cn1'], PacketCount = ['cn2'], TotalBytes = ['flexNumber1'],
+    Direction = ['flexString2'],
+    RequestURL = trim('"', tostring(['request'])),
+    URLCategoryList = trim('"', tostring(['PanOSURLCatList'])),
+    SequenceNumber = ['externalId']
+// --- assert against expected ---------------------------------------------------------
+| join kind=leftouter Expected on TestName
+| extend Details = strcat(
+    iff(LogType        == ExpLogType,   "", "LogType "),
+    iff(SubType        == ExpSubType,   "", "SubType "),
+    iff(DeviceVendor   == "Palo Alto Networks", "", "Vendor "),
+    iff(DeviceProduct  == "PAN-OS",     "", "Product "),
+    iff(DeviceVersion  == ExpVersion,   "", "Version "),
+    iff(DestinationPort == ExpDPt,      "", "DestPort "),
+    iff(DeviceAction   == ExpAction,    "", "Action "),
+    iff(RuleName       == ExpRule,      "", "RuleName "),
+    iff(URLCategory    == ExpUrlCat,    "", "URLCategory "),
+    iff(SessionID      == ExpSession,   "", "SessionID "),
+    iff(RequestURL     == ExpRequest,   "", "RequestURL "),
+    iff(Direction      == ExpDirection, "", "Direction ")
+  )
+| extend Passed = isempty(Details)
+| project TestName, Passed, Details, LogType, SubType, DeviceVersion, SourceIP, DestinationIP,
+          DestinationPort, DeviceAction, RuleName, URLCategory, SessionID, TotalBytes,
+          Direction, RequestURL, URLCategoryList, SequenceNumber
+| order by TestName asc
