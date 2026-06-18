@@ -71,8 +71,15 @@ The `cs*`/`cn*`/`flex*` meanings come from this firewall's custom syslog profile
 | `flexNumber1` | Total bytes |
 | `externalId` | Sequence Number |
 
-The full raw extension is always retained in `AdditionalExtensions`, so no data is lost even
-where a field isn't broken out into its own column.
+These column names come from each field's `…Label` companion (per the CEF spec, `csNLabel`
+*"describes the purpose of the custom field"*). Because ADX column names are fixed schema, the
+mapping is baked in from the observed labels rather than generated per-row — `validation.kql`
+includes a drift check that flags any record whose labels stop matching.
+
+Every CEF key that **isn't** promoted to a typed column is kept in a `dynamic` column,
+`UnparsedFields`, built with `pack_all(true)` (so null/empty keys are dropped) minus the keys
+already exposed as columns. No duplication, and nothing is lost — and any unmapped custom field
+keeps both its `csN` value and `csNLabel` name, so it stays self-describing.
 
 ## Quick start
 
@@ -95,4 +102,8 @@ data (update policies are forward-only).
 - `StartTime` / `ReceiptTime` are kept as strings (PAN's `Mon dd yyyy HH:mm:ss GMT` format
   isn't `todatetime`-parseable); query on `TimeGenerated`.
 - THREAT was validated on the `url` subtype; other subtypes may add a key or two, which
-  belong in `PaloAlto_CEF_Parsed()`. Nothing is lost meanwhile thanks to `AdditionalExtensions`.
+  belong in `PaloAlto_CEF_Parsed()`. Nothing is lost meanwhile thanks to `UnparsedFields`.
+- This is the standard pattern: Microsoft's own ADX firewall-monitoring guidance uses
+  raw-table + update-policy + parse-function, and Sentinel **ASIM** parsers split a shared
+  table per log type the same way. We keep PAN-native field names (not the ASIM cross-vendor
+  schema) to preserve fidelity for long-term storage.

@@ -64,6 +64,6 @@ Update policies don't touch data already in `Syslog`. To populate the tables fro
 
 ## Known caveats
 
-- **Threat subtypes:** validated against the `url` subtype. Other subtypes (`virus`, `wildfire`, `vulnerability`, `file`) may carry a few extra `PanOS*` keys. If you see odd nulls in `PaloAlto_Threat`, grab one of those samples — the fix is to declare the new key(s) in `PaloAlto_CEF_Parsed()`. The full raw extension is always kept in `AdditionalExtensions`, so nothing is lost meanwhile.
+- **Threat subtypes:** validated against the `url` subtype. Other subtypes (`virus`, `wildfire`, `vulnerability`, `file`) may carry a few extra `PanOS*` keys. If you see odd nulls in `PaloAlto_Threat`, grab one of those samples — the fix is to declare the new key(s) in `PaloAlto_CEF_Parsed()`. Any field not promoted to a column is kept in the `UnparsedFields` dynamic bag, so nothing is lost meanwhile.
 - **CONFIG / SYSTEM / etc.** currently land in the `PaloAlto` catch-all with the raw extension preserved; promote any of them to a dedicated table by copying the TRAFFIC pattern.
 - **Timestamps:** `StartTime` / `ReceiptTime` are stored as strings because PAN's `Mon dd yyyy HH:mm:ss GMT` format isn't `todatetime`-parseable. `TimeGenerated` (real datetime) is the column to query on.

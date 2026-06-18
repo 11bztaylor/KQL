@@ -56,7 +56,7 @@ PaloAlto
 PaloAlto_Traffic
 | where TimeGenerated > ago(1h)
 | where isempty(SourceIP) or isempty(DestinationIP) or isempty(DeviceAction)
-| project TimeGenerated, SubType, SourceIP, DestinationIP, DeviceAction, AdditionalExtensions
+| project TimeGenerated, SubType, SourceIP, DestinationIP, DeviceAction, UnparsedFields
 | take 50;
 
 
@@ -82,3 +82,28 @@ PaloAlto_Traffic
 //     PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
 // .set-or-append PaloAlto <|
 //     PaloAlto_parse()         | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
+
+
+// -------------------------------------------------------------------------------------
+// 7) CUSTOM-FIELD LABEL DRIFT  -- the cs*/cn*/flex* column names are baked in from the
+//    firewall's syslog profile (csNLabel = the field's purpose). If an admin ever
+//    repurposes a slot, the label changes and our static column name becomes wrong.
+//    This returns rows ONLY when a label stops matching the assumption. Empty = healthy.
+// -------------------------------------------------------------------------------------
+PaloAlto_CEF_Parsed()
+| where TimeGenerated > ago(1d)
+| where (isnotempty(cs1Label)         and cs1Label         != "Rule")
+     or (isnotempty(cs2Label)         and cs2Label         != "URL Category")
+     or (isnotempty(cs4Label)         and cs4Label         != "Source Zone")
+     or (isnotempty(cs5Label)         and cs5Label         != "Destination Zone")
+     or (isnotempty(cs6Label)         and cs6Label         != "LogProfile")
+     or (isnotempty(cn1Label)         and cn1Label         != "SessionID")
+     or (isnotempty(cn2Label)         and cn2Label         != "Packets")
+     or (isnotempty(cn3Label)         and cn3Label         != "Elapsed time in seconds")
+     or (isnotempty(flexString1Label) and flexString1Label != "Flags")
+     or (isnotempty(flexString2Label) and flexString2Label != "Direction")
+     or (isnotempty(flexNumber1Label) and flexNumber1Label != "Total bytes")
+| summarize Records = count() by LogType,
+    cs1Label, cs2Label, cs4Label, cs5Label, cs6Label,
+    cn1Label, cn2Label, cn3Label, flexString1Label, flexString2Label, flexNumber1Label
+| order by Records desc;
