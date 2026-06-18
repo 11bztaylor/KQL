@@ -1,0 +1,131 @@
+// =====================================================================================
+// SIDEQUEST  --  backfill historical Palo Alto THREAT logs into PaloAlto_Threat
+// =====================================================================================
+//
+// SCENARIO
+//   A Sentinel *Search Job* over CommonSecurityLog (archived, ~1 year back) produced a
+//   CEF results table, already landed in ADX, containing ONLY Palo Alto THREAT logs in the
+//   standard CommonSecurityLog schema. We want those historical rows in the same
+//   PaloAlto_Threat table the live update policy writes to.
+//
+//   This is NOT the raw-Syslog path: CommonSecurityLog is already parsed into columns, so
+//   we map column-to-column (not split a CEF header). The PAN-specific extras that
+//   CommonSecurityLog didn't map to a column live in its AdditionalExtensions string, which
+//   we preserve in UnparsedFields (and pull RuleUUID / URLCategoryList out of).
+//
+// SAFETY
+//   - The backfill is written with an extent TAG ("backfill:csl-searchjob") so it is
+//     identifiable and fully reversible (drop by tag) -- see section 4/5.
+//   - Re-running the append DOUBLES the data. Drop the tagged extents before re-running.
+//   - Only backfill the window BEFORE your live ingestion started, or you'll duplicate
+//     rows that the update policy already wrote.
+//
+// HOW TO USE
+//   1. Set the two placeholders below (source table name + date range).
+//   2. Run section 1 (create the mapper), then section 2 (PREVIEW - no write) and eyeball.
+//   3. Run section 3 (the tagged backfill).
+//   4. Reconcile (section 4). If wrong, roll back (section 5) and retry.
+// =====================================================================================
+
+
+// -------------------------------------------------------------------------------------
+// 1) MAPPER  -- CommonSecurityLog-shaped PA THREAT rows  ->  PaloAlto_Threat schema.
+//    Column order matches PaloAlto_Threat exactly (required by .set-or-append).
+//    column_ifexists() guards columns that only exist in newer CommonSecurityLog schemas.
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'SIDEQUEST: map CommonSecurityLog-shaped Palo Alto THREAT rows to the PaloAlto_Threat schema for historical backfill', folder = 'PaloAlto/SIDEQUEST')
+  PaloAlto_Threat_FromCSL(T:(*)) {
+    T
+    | where DeviceVendor has "Palo Alto"     // source is threat-only, but stay vendor-safe
+    | project
+        TimeGenerated,
+        DeviceVendor             = tostring(DeviceVendor),
+        DeviceProduct            = tostring(DeviceProduct),
+        DeviceVersion            = tostring(DeviceVersion),
+        LogType                  = "THREAT",                       // source is curated THREAT-only
+        SubType                  = tostring(DeviceEventClassID),   // $subtype: url/virus/spyware/...
+        LogSeverity              = tostring(LogSeverity),
+        Computer                 = tostring(Computer),
+        DeviceName               = tostring(DeviceName),
+        FirewallSerial           = tostring(DeviceExternalID),
+        SourceIP                 = tostring(SourceIP),
+        SourcePort               = toint(SourcePort),
+        DestinationIP            = tostring(DestinationIP),
+        DestinationPort          = toint(DestinationPort),
+        Protocol                 = tostring(Protocol),
+        ApplicationProtocol      = tostring(ApplicationProtocol),
+        DeviceAction             = tostring(DeviceAction),
+        CommunicationDirection   = tostring(CommunicationDirection),
+        Direction                = tostring(FlexString2),          // flexString2Label=Direction
+        SourceUserName           = tostring(SourceUserName),
+        DestinationUserName      = tostring(DestinationUserName),
+        RequestURL               = trim('"', tostring(RequestURL)),
+        RequestMethod            = tostring(RequestMethod),
+        RequestClientApplication = tostring(RequestClientApplication),
+        RequestContext           = tostring(RequestContext),
+        FileName                 = tostring(FileName),
+        FilePath                 = tostring(FilePath),
+        FileHash                 = tostring(FileHash),
+        FileID                   = tostring(FileID),
+        ThreatCategory           = tostring(DeviceEventCategory),  // cat
+        URLCategory              = tostring(DeviceCustomString2),  // cs2Label=URL Category
+        URLCategoryList          = extract(@'PanOSURLCatList="?([^";]+)"?', 1, tostring(AdditionalExtensions)),
+        Message                  = tostring(Message),
+        SessionID                = toint(coalesce(tolong(column_ifexists("FieldDeviceCustomNumber1", long(null))), tolong(DeviceCustomNumber1))),  // cn1=SessionID
+        SequenceNumber           = iff(isnotempty(tostring(column_ifexists("ExtID", ""))), tostring(column_ifexists("ExtID", "")), tostring(ExternalID)),
+        RuleName                 = tostring(DeviceCustomString1),  // cs1Label=Rule
+        SourceZone               = tostring(DeviceCustomString4),  // cs4Label=Source Zone
+        DestinationZone          = tostring(DeviceCustomString5),  // cs5Label=Destination Zone
+        LogProfile               = tostring(DeviceCustomString6),  // cs6Label=LogProfile
+        Flags                    = tostring(FlexString1),          // flexString1Label=Flags
+        RuleUUID                 = extract(@'PanOSRuleUUID=([0-9a-fA-F\-]{8,})', 1, tostring(AdditionalExtensions)),
+        ReceiptTime              = tostring(ReceiptTime),
+        // CommonSecurityLog already split the mapped keys into columns; its AdditionalExtensions
+        // holds the leftover PAN keys. Preserve it whole so nothing is lost. (Live rows store a
+        // pre-split bag here instead -- a documented, harmless difference for historical data.)
+        UnparsedFields           = bag_pack("AdditionalExtensions", AdditionalExtensions)
+  }
+
+
+// -------------------------------------------------------------------------------------
+// 2) PREVIEW (no write)  -- EDIT the two placeholders, then run and sanity-check ~100 rows.
+//        <SourceSearchJobTable>  = your CommonSecurityLog-shaped search-job table
+//        date range              = the window you are backfilling
+// -------------------------------------------------------------------------------------
+PaloAlto_Threat_FromCSL(
+    <SourceSearchJobTable>
+    | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
+)
+| take 100;
+
+
+// -------------------------------------------------------------------------------------
+// 3) BACKFILL (writes)  -- tagged so it is identifiable and reversible. Uses the same
+//    placeholders as the preview. `async` returns an operation id (track via .show operations).
+// -------------------------------------------------------------------------------------
+.set-or-append async PaloAlto_Threat with (tags='["backfill:csl-searchjob"]') <|
+    PaloAlto_Threat_FromCSL(
+        <SourceSearchJobTable>
+        | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
+    )
+
+
+// -------------------------------------------------------------------------------------
+// 4) RECONCILE  -- the two counts should match (source PA-threat rows vs rows we appended).
+// -------------------------------------------------------------------------------------
+PaloAlto_Threat
+| where extent_tags() has 'backfill:csl-searchjob'
+| summarize Appended = count();
+
+<SourceSearchJobTable>
+| where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
+| where DeviceVendor has "Palo Alto"
+| summarize SourceRows = count();
+
+
+// -------------------------------------------------------------------------------------
+// 5) ROLLBACK (if the backfill was wrong)  -- drops ONLY the tagged backfill extents,
+//    leaving live data untouched. Uncomment to run.
+// -------------------------------------------------------------------------------------
+// .drop extents <| .show table PaloAlto_Threat extents where tags has 'backfill:csl-searchjob'
