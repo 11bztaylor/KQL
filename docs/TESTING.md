@@ -4,9 +4,11 @@ Files in this repo:
 
 | File | Purpose |
 |------|---------|
-| `README.md` | The deployable KQL: base parser + `PaloAlto_Traffic` / `PaloAlto_Threat` / `PaloAlto` functions, tables, and update policies. |
-| `PaloAlto_tests.kql` | **Self-contained** parser test. Runs the parse against the 3 real sample logs and asserts the output. Touches no tables. |
-| `validation.kql` | Post-deployment monitoring: reconciliation, freshness, catch-all breakdown, parse health, backfill. |
+| [`../paloalto/deploy/PaloAlto_CEF.kql`](../paloalto/deploy/PaloAlto_CEF.kql) | The deployable KQL: parser functions, tables, and update policies. |
+| [`../paloalto/tests/PaloAlto_tests.kql`](../paloalto/tests/PaloAlto_tests.kql) | Parser tests — feed synthetic rows into the real parser; assert fields + the non-PA-excluded invariant. |
+| [`../paloalto/enrichment/enrichment.kql`](../paloalto/enrichment/enrichment.kql) | Query-time enrichment views (geo, labels, scope, reason descriptions, decoded flags). |
+| [`../paloalto/ops/validation.kql`](../paloalto/ops/validation.kql) | Post-deployment monitoring: reconciliation, freshness, catch-all breakdown, parse health, drift check, backfill. |
+| [`../paloalto/backfill/SIDEQUEST.kql`](../paloalto/backfill/SIDEQUEST.kql) | One-off historical THREAT backfill from CommonSecurityLog. |
 
 ---
 
