@@ -21,6 +21,7 @@ union
     ( union
           (PaloAlto_Traffic | where TimeGenerated > ago(lookback)),
           (PaloAlto_Threat  | where TimeGenerated > ago(lookback)),
+          (PaloAlto_UserID  | where TimeGenerated > ago(lookback)),
           (PaloAlto         | where TimeGenerated > ago(lookback))
       | summarize Rows = count()
       | extend Stage = "2_PaloAlto_tables" )
@@ -33,6 +34,7 @@ union
 union
     (PaloAlto_Traffic | extend Tbl = "Traffic"),
     (PaloAlto_Threat  | extend Tbl = "Threat"),
+    (PaloAlto_UserID  | extend Tbl = "UserID"),
     (PaloAlto         | extend Tbl = "PaloAlto")
 | where TimeGenerated > ago(24h)
 | summarize Rows = count(), Latest = max(TimeGenerated), MinutesStale = datetime_diff('minute', now(), max(TimeGenerated)) by Tbl
@@ -68,6 +70,7 @@ PaloAlto_Traffic
 // -------------------------------------------------------------------------------------
 .show table PaloAlto_Traffic policy update;
 .show table PaloAlto_Threat  policy update;
+.show table PaloAlto_UserID  policy update;
 .show table PaloAlto         policy update;
 
 
@@ -80,6 +83,8 @@ PaloAlto_Traffic
 //     PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
 // .set-or-append PaloAlto_Threat <|
 //     PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
+// .set-or-append PaloAlto_UserID <|
+//     PaloAlto_UserID_parse()  | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
 // .set-or-append PaloAlto <|
 //     PaloAlto_parse()         | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
 
@@ -92,6 +97,7 @@ PaloAlto_Traffic
 // -------------------------------------------------------------------------------------
 PaloAlto_CEF_Parsed()
 | where TimeGenerated > ago(1d)
+| where LogType in ("TRAFFIC", "THREAT")   // USERID and others reuse cs*/cn* with different labels
 | where (isnotempty(cs1Label)         and cs1Label         != "Rule")
      or (isnotempty(cs2Label)         and cs2Label         != "URL Category")
      or (isnotempty(cs4Label)         and cs4Label         != "Source Zone")
