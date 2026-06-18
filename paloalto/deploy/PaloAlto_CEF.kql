@@ -45,15 +45,15 @@
 //    (The Syslog passthrough columns and the header-derived columns are excluded from it.)
 // -------------------------------------------------------------------------------------
 .create-or-alter function
-  with (docstring = 'Row-level Palo Alto PAN-OS CEF parser; takes any table with a SyslogMessage column so the SAME logic is reusable and unit-testable with synthetic input', folder = 'PaloAlto')
-  PaloAlto_CEF_ParseRows(T:(*)) {
+  with (docstring = 'Palo Alto Networks PAN-OS CEF parsed out of Syslog - common projection + UnparsedAll bag, routed by log type', folder = 'PaloAlto')
+  PaloAlto_CEF_Parsed() {
     let _nonKv = dynamic([
       "TimeGenerated","Computer","HostName","HostIP","Facility","SeverityLevel","SyslogMessage",
       "ProcessID","ProcessName","SourceSystem","EventTime","CollectorHostName",
       "_UniqueRecordId","_ResourceId","_SubscriptionId","_ReceivedTime",
       "DeviceVendor","DeviceProduct","DeviceVersion","SubType","LogType","LogSeverity"
     ]);
-    T
+    Syslog
     | where SyslogMessage has "Palo Alto Networks"
     | extend _p = split(SyslogMessage, '|')
     | where tostring(_p[1]) == "Palo Alto Networks"
@@ -105,14 +105,6 @@
     | project-away _p, _ext
     // bag of every non-empty CEF extension key (Syslog/header columns excluded)
     | extend UnparsedAll = bag_remove_keys(pack_all(true), _nonKv)
-  }
-
-// Production entry point: the same parser, bound to the live Syslog table.
-// (PaloAlto_tests.kql calls PaloAlto_CEF_ParseRows() directly with synthetic rows.)
-.create-or-alter function
-  with (docstring = 'Palo Alto Networks PAN-OS CEF parsed out of the live Syslog table', folder = 'PaloAlto')
-  PaloAlto_CEF_Parsed() {
-    PaloAlto_CEF_ParseRows(Syslog)
   }
 
 
