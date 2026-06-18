@@ -21,7 +21,8 @@ one table and nothing is silently dropped.
 | File | What it is |
 |------|------------|
 | [`PaloAlto_CEF.kql`](PaloAlto_CEF.kql) | **The deployable KQL** — base parser, per-table projection functions, `.create table`, and update policies. |
-| [`PaloAlto_tests.kql`](PaloAlto_tests.kql) | Self-contained parser test. Runs the parse against four representative sample logs and asserts the output. Touches no tables — safe to run anywhere. |
+| [`PaloAlto_tests.kql`](PaloAlto_tests.kql) | Parser tests. Feed synthetic CEF rows into the **real** `PaloAlto_CEF_ParseRows` function (no duplicated logic), assert field values, and check the non-Palo-Alto-excluded invariant. Touches no tables. |
+| [`enrichment.kql`](enrichment.kql) | Query-time enrichment: GeoIP, severity/direction/action labels, internal/external scope, session-end-reason descriptions, decoded session flags. Raw tables stay untouched. |
 | [`validation.kql`](validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
 | [`TESTING.md`](TESTING.md) | Deploy → test → verify → backfill runbook. |
 | [`SIDEQUEST.kql`](SIDEQUEST.kql) | One-off historical backfill: maps a CommonSecurityLog-shaped Search Job table (Palo Alto THREAT only) into `PaloAlto_Threat`, tagged and reversible. |
