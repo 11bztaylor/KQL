@@ -23,6 +23,7 @@ one table and nothing is silently dropped.
 | [`PaloAlto_tests.kql`](PaloAlto_tests.kql) | Self-contained parser test. Runs the parse against three real sample logs and asserts the output. Touches no tables — safe to run anywhere. |
 | [`validation.kql`](validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
 | [`TESTING.md`](TESTING.md) | Deploy → test → verify → backfill runbook. |
+| [`SIDEQUEST.kql`](SIDEQUEST.kql) | One-off historical backfill: maps a CommonSecurityLog-shaped Search Job table (Palo Alto THREAT only) into `PaloAlto_Threat`, tagged and reversible. |
 
 ## How it works
 
