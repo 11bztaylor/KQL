@@ -2,37 +2,41 @@
 // PaloAlto_tests.kql  --  self-contained parser test harness
 // =====================================================================================
 // WHAT THIS DOES
-//   Runs the exact PaloAlto_CEF_Parsed() parse logic against the three REAL sample
-//   messages captured from production (2x TRAFFIC, 1x THREAT/url) and asserts that the
-//   key fields land in the right columns with the expected values.
+//   Runs the exact PaloAlto_CEF_Parsed() parse logic against three representative sample
+//   messages (2x TRAFFIC, 1x THREAT/url) and asserts that the key fields land in the
+//   right columns with the expected values.
 //
 // HOW TO RUN
 //   Paste this whole file into an ADX / Kusto query window and run it. It touches NO
 //   tables and deploys nothing -- safe to run anywhere, before or after deploying
-//   README.md. Every row in the result should show Passed == true and an empty Details.
-//   A non-empty Details lists which field(s) failed for that sample.
+//   PaloAlto_CEF.kql. Every row in the result should show Passed == true and an empty
+//   Details. A non-empty Details lists which field(s) failed for that sample.
+//
+// NOTE: all values below are FAKE but representative -- documentation IP ranges
+//   (RFC 5737 / RFC 1918), example.com-style users, and placeholder rule/zone/profile
+//   names. Replace with your own captures if you want to test against real layouts.
 // =====================================================================================
 
-// --- the three real samples (already sanitized: omit / 666 placeholders) -------------
+// --- three representative samples (fake but realistic data) --------------------------
 let Samples = datatable(TestName:string, SyslogMessage:string)
 [
   "TRAFFIC_drop_13.5",
-    "0|Palo Alto Networks|PAN-OS|13.5.60-h10|drop|TRAFFIC|1|rt=Jun 15 2026 14:58:03 GMT deviceExternalId=066606000666 src=666.666.66.6 dst=666.666.666.666 sourceTranslatedAddress=0.0.0.0 destinationTranslatedAddress=0.0.0.0 cs1Label=Rule cs1=SgnInDenyByDefault-1 suser= duser= app=not-applicable cs4Label=Source Zone cs4=DocSgn cs5Label=Destination Zone cs5=DocSgn deviceInboundInterface=ae5 deviceOutboundInterface= cs6Label=LogProfile cs6=ABC1-UG-LA-0017 cn1Label=SessionID cn1=0 cnt=1 spt=4113 dpt=7680 sourceTranslatedPort=0 destinationTranslatedPort=0 flexString1Label=Flags flexString1=0x0 proto=tcp act=drop flexNumber1Label=Total bytes flexNumber1=66 in=0 out=66 cn2Label=Packets cn2=1 PanOSPacketsReceived=0 PanOSPacketsSent=1 start=Jun 15 2026 14:58:03 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=any externalId=32487329847983375 reason=policy-deny dvchost=OMIT cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=OMIT PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
+    "0|Palo Alto Networks|PAN-OS|13.5.60-h10|drop|TRAFFIC|1|rt=Jun 15 2026 14:58:03 GMT deviceExternalId=012345678901 src=10.20.30.40 dst=203.0.113.45 sourceTranslatedAddress=0.0.0.0 destinationTranslatedAddress=0.0.0.0 cs1Label=Rule cs1=Deny-Inbound-Default suser= duser= app=not-applicable cs4Label=Source Zone cs4=untrust cs5Label=Destination Zone cs5=trust deviceInboundInterface=ae5 deviceOutboundInterface= cs6Label=LogProfile cs6=Net-LogProfile-01 cn1Label=SessionID cn1=0 cnt=1 spt=50234 dpt=7680 sourceTranslatedPort=0 destinationTranslatedPort=0 flexString1Label=Flags flexString1=0x0 proto=tcp act=drop flexNumber1Label=Total bytes flexNumber1=66 in=0 out=66 cn2Label=Packets cn2=1 PanOSPacketsReceived=0 PanOSPacketsSent=1 start=Jun 15 2026 14:58:03 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=any externalId=7239847239847 reason=policy-deny dvchost=fw-edge-01 cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=b2e9c1a4-5f3d-4c8e-9a1b-2d3e4f5a6b7c PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
   "TRAFFIC_allow_10.1",
-    "0|Palo Alto Networks|PAN-OS|10.1.10-i11|end|TRAFFIC|1|rt=Jun 18 2026 19:51:32 GMT deviceExternalId=23432432423 src=OMIT dst=OMIT sourceTranslatedAddress=OMIT destinationTranslatedAddress=OMIT cs1Label=Rule cs1=rulename suser=user@domain.co duser= app=ssl cs4Label=Source Zone cs4=ZONE cs5Label=Destination Zone cs5=DocSgn deviceInboundInterface=ae7 deviceOutboundInterface=ae3 cs6Label=LogProfile cs6=PROFILENAME cn1Label=SessionID cn1=2546623 cnt=1 spt=54655 dpt=443 sourceTranslatedPort=54902 destinationTranslatedPort=443 flexString1Label=Flags flexString1=0x54340d proto=tcp act=allow flexNumber1Label=Total bytes flexNumber1=2080 in=60 out=2020 cn2Label=Packets cn2=4 PanOSPacketsReceived=1 PanOSPacketsSent=4 start=Jun 18 2026 19:51:32 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=web-advertisements externalId=2432342423234 reason=threat dvchost=NAME cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=OMIT PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
+    "0|Palo Alto Networks|PAN-OS|10.1.10-i11|end|TRAFFIC|1|rt=Jun 18 2026 19:51:32 GMT deviceExternalId=012345678902 src=10.20.30.55 dst=23.50.60.70 sourceTranslatedAddress=198.51.100.10 destinationTranslatedAddress=23.50.60.70 cs1Label=Rule cs1=Allow-Outbound-Web suser=jdoe@contoso.com duser= app=ssl cs4Label=Source Zone cs4=trust cs5Label=Destination Zone cs5=untrust deviceInboundInterface=ae7 deviceOutboundInterface=ae3 cs6Label=LogProfile cs6=Net-LogProfile-01 cn1Label=SessionID cn1=2546623 cnt=1 spt=54655 dpt=443 sourceTranslatedPort=54902 destinationTranslatedPort=443 flexString1Label=Flags flexString1=0x54340d proto=tcp act=allow flexNumber1Label=Total bytes flexNumber1=2080 in=60 out=2020 cn2Label=Packets cn2=4 PanOSPacketsReceived=1 PanOSPacketsSent=4 start=Jun 18 2026 19:51:32 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=web-advertisements externalId=7239847239901 reason=aged-out dvchost=fw-edge-02 cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=c3f0d2b5-6a4e-4d9f-8b2c-3e4f5a6b7c8d PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
   "THREAT_url_10.1",
-    "0|Palo Alto Networks|PAN-OS|10.1.10-h10|url|THREAT|1|rt=Jun 18 2026 20:02:34 GMT deviceExternalId=4354534345 src=omit dst=omit sourceTranslatedAddress=omit destinationTranslatedAddress=omit cs1Label=Rule cs1=omit00-1 suser=omit@AGY.YE.gov duser= app=ssl cs4Label=Source Zone cs4=omit cs5Label=Destination Zone cs5=DocSgn deviceInboundInterface=ae7 deviceOutboundInterface=ae1 cs6Label=LogProfile cs6=omit cn1Label=SessionID cn1=500741 cnt=1 spt=65171 dpt=443 sourceTranslatedPort=36856 destinationTranslatedPort=443 flexString1Label=Flags flexString1=omit proto=tcp act=alert request=\"mobile.events.data.microsoft.com/\" cs2Label=URL Category cs2=omit0365 flexString2Label=Direction flexString2=client-to-server externalId=omit requestContext= cat=(9999) fileId=0 requestMethod= requestClientApplication= dvchost=omit3440 PanOSHTTPHeader= PanOSRuleUUID=omit PanOSURLCatList=\"SharedDocDefenderUrl,computer-and-internet-info,low-risk\" PanOSHTTP2Con=0 PanDynamicUsrgrp="
+    "0|Palo Alto Networks|PAN-OS|10.1.10-h10|url|THREAT|1|rt=Jun 18 2026 20:02:34 GMT deviceExternalId=012345678903 src=10.20.30.77 dst=20.190.160.10 sourceTranslatedAddress=198.51.100.20 destinationTranslatedAddress=20.190.160.10 cs1Label=Rule cs1=Outbound-URL-Inspect suser=asmith@contoso.com duser= app=ssl cs4Label=Source Zone cs4=trust cs5Label=Destination Zone cs5=untrust deviceInboundInterface=ae7 deviceOutboundInterface=ae1 cs6Label=LogProfile cs6=Threat-LogProfile-01 cn1Label=SessionID cn1=500741 cnt=1 spt=65171 dpt=443 sourceTranslatedPort=36856 destinationTranslatedPort=443 flexString1Label=Flags flexString1=0x1a2b3c proto=tcp act=alert request=\"mobile.events.data.microsoft.com/\" cs2Label=URL Category cs2=computer-and-internet-info flexString2Label=Direction flexString2=client-to-server externalId=7239847240015 requestContext= cat=(9999) fileId=0 requestMethod= requestClientApplication= dvchost=fw-edge-02 PanOSHTTPHeader= PanOSRuleUUID=d4a1e3c6-7b5f-4e0a-9c3d-4f5a6b7c8d9e PanOSURLCatList=\"SharedDocDefenderUrl,computer-and-internet-info,low-risk\" PanOSHTTP2Con=0 PanDynamicUsrgrp="
 ];
 
 // --- expected values (assertions) ----------------------------------------------------
 let Expected = datatable(TestName:string, ExpLogType:string, ExpSubType:string, ExpVersion:string, ExpDPt:int, ExpAction:string, ExpRule:string, ExpUrlCat:string, ExpSession:long, ExpRequest:string, ExpDirection:string)
 [
-  "TRAFFIC_drop_13.5",  "TRAFFIC", "drop", "13.5.60-h10", 7680, "drop",  "SgnInDenyByDefault-1", "any",               0,       "",                                  "",
-  "TRAFFIC_allow_10.1", "TRAFFIC", "end",  "10.1.10-i11", 443,  "allow", "rulename",             "web-advertisements", 2546623, "",                                  "",
-  "THREAT_url_10.1",    "THREAT",  "url",  "10.1.10-h10", 443,  "alert", "omit00-1",             "omit0365",           500741,  "mobile.events.data.microsoft.com/", "client-to-server"
+  "TRAFFIC_drop_13.5",  "TRAFFIC", "drop", "13.5.60-h10", 7680, "drop",  "Deny-Inbound-Default", "any",                        0,       "",                                  "",
+  "TRAFFIC_allow_10.1", "TRAFFIC", "end",  "10.1.10-i11", 443,  "allow", "Allow-Outbound-Web",   "web-advertisements",         2546623, "",                                  "",
+  "THREAT_url_10.1",    "THREAT",  "url",  "10.1.10-h10", 443,  "alert", "Outbound-URL-Inspect", "computer-and-internet-info", 500741,  "mobile.events.data.microsoft.com/", "client-to-server"
 ];
 
-// --- parse (mirrors PaloAlto_CEF_Parsed() in README.md) ------------------------------
+// --- parse (mirrors PaloAlto_CEF_Parsed() in PaloAlto_CEF.kql) -----------------------
 Samples
 | extend _p = split(SyslogMessage, '|')
 | where tostring(_p[1]) == "Palo Alto Networks"
