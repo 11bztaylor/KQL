@@ -21,7 +21,7 @@ one table and nothing is silently dropped.
 | File | What it is |
 |------|------------|
 | [`PaloAlto_CEF.kql`](paloalto/deploy/PaloAlto_CEF.kql) | **The deployable KQL** — base parser, per-table projection functions, `.create table`, and update policies. |
-| [`PaloAlto_tests.kql`](paloalto/tests/PaloAlto_tests.kql) | Parser tests. Feed synthetic CEF rows into the **real** `PaloAlto_CEF_ParseRows` function (no duplicated logic), assert field values, and check the non-Palo-Alto-excluded invariant. Touches no tables. |
+| [`PaloAlto_tests.kql`](paloalto/tests/PaloAlto_tests.kql) | Parser characterization tests: mirror the deployed routing/header parse on sample messages, assert field extraction, and check the non-Palo-Alto-excluded invariant. Touches no tables. |
 | [`enrichment.kql`](paloalto/enrichment/enrichment.kql) | Query-time enrichment: GeoIP, severity/direction/action labels, internal/external scope, session-end-reason descriptions, decoded session flags. Raw tables stay untouched. |
 | [`validation.kql`](paloalto/ops/validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
 | [`TESTING.md`](docs/TESTING.md) | Deploy → test → verify → backfill runbook. |

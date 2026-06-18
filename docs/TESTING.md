@@ -5,30 +5,36 @@ Files in this repo:
 | File | Purpose |
 |------|---------|
 | [`../paloalto/deploy/PaloAlto_CEF.kql`](../paloalto/deploy/PaloAlto_CEF.kql) | The deployable KQL: parser functions, tables, and update policies. |
-| [`../paloalto/tests/PaloAlto_tests.kql`](../paloalto/tests/PaloAlto_tests.kql) | Parser tests — feed synthetic rows into the real parser; assert fields + the non-PA-excluded invariant. |
+| [`../paloalto/tests/PaloAlto_tests.kql`](../paloalto/tests/PaloAlto_tests.kql) | Parser characterization tests — mirror the deployed routing/header parse on samples; assert fields + the non-PA-excluded invariant. |
 | [`../paloalto/enrichment/enrichment.kql`](../paloalto/enrichment/enrichment.kql) | Query-time enrichment views (geo, labels, scope, reason descriptions, decoded flags). |
 | [`../paloalto/ops/validation.kql`](../paloalto/ops/validation.kql) | Post-deployment monitoring: reconciliation, freshness, catch-all breakdown, parse health, drift check, backfill. |
 | [`../paloalto/backfill/SIDEQUEST.kql`](../paloalto/backfill/SIDEQUEST.kql) | One-off historical THREAT backfill from CommonSecurityLog. |
 
 ---
 
-## Step 1 — Test the parser logic
+## Step 1 — Test the parser logic (no deployment, zero risk)
 
-The tests feed synthetic CEF rows into the **real** parser function (`PaloAlto_CEF_ParseRows`),
-so they catch any regression in the deployed logic — but that means the parser function must
-exist first.
+The production parser (`PaloAlto_CEF_Parsed`) is a **pure** function that reads `Syslog`
+directly — the standard ADX update-policy pattern. A pure parser can't be fed synthetic rows,
+so `PaloAlto_tests.kql` is a **characterization test**: it mirrors the deployed routing + `|`
+header parse on sample messages and spot-checks field extraction. It deploys nothing.
 
-1. Deploy the two parser functions from `PaloAlto_CEF.kql` (`PaloAlto_CEF_ParseRows` and
-   `PaloAlto_CEF_Parsed`) — or just run the whole file (Step 2).
-2. Open `PaloAlto_tests.kql`, paste it into an ADX/Kusto query window, run it. It returns **two** tables:
+1. Open `PaloAlto_tests.kql`, paste it into an ADX/Kusto query window, run it. Two tables:
    - **A) Field assertions** — 4 rows, every `Passed == true`, every `Details` empty
-     (`TRAFFIC_drop_13.5`, `TRAFFIC_allow_10.1`, `THREAT_url_10.1`, `USERID_login_10.1`).
+     (keyed by `DeviceVersion`: `13.5.60-h10`, `10.1.10-i11`, `10.1.10-h10`, `10.1.11-h5`).
    - **B) Invariant check** — `Passed == true`: the non-Palo-Alto (Cisco) row is dropped and
      exactly the 4 Palo Alto rows survive across 3 log types.
-3. If a field assertion fails, `Details` names the field(s) that didn't match.
+2. If a field assertion fails, `Details` names the field(s) that didn't match. If you change
+   the header layout or routing in `PaloAlto_CEF.kql`, update the mirror in the test.
 
-The tests still touch **no real tables** — synthetic rows go straight into the function — so
-they're safe to run anywhere the parser is deployed.
+### Full-fidelity option (true end-to-end)
+
+To exercise the *actual* deployed functions, use a **scratch database** (never prod — seeding
+`Syslog` fires the update policies and routes the rows into the real tables):
+
+1. Deploy `PaloAlto_CEF.kql` in the scratch DB.
+2. `.set-or-append Syslog <| <the sample messages from PaloAlto_tests.kql>`
+3. Query `PaloAlto_CEF_Parsed()` / `PaloAlto_Traffic_parse()` / etc. and compare.
 
 ---
 

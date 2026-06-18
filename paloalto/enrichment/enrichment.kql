@@ -62,32 +62,31 @@
 
 
 // -------------------------------------------------------------------------------------
-// 2) FLAG DECODER  -- adds FlagsValue (long) and SessionFlags (array of names) from a hex
-//    `Flags` string column, via Shared_HexToLong() then bit-testing the documented PAN masks.
-//    Input table T must have a `Flags` column (PaloAlto_Traffic / PaloAlto_Threat do).
+// 2) FLAG DECODER  -- SCALAR function: hex `Flags` string -> array of session-flag names,
+//    via Shared_HexToLong() then bit-testing the documented PAN masks. Scalar (not a table
+//    function) so views call it inline per row without affecting their column set.
 // -------------------------------------------------------------------------------------
 .create-or-alter function
-  with (docstring = 'Adds FlagsValue (long) and SessionFlags (decoded names) from a hex Flags column', folder = 'PaloAlto/Enrichment')
-  PaloAlto_WithFlagBits(T:(*)) {
-    T
-    | extend FlagsValue = Shared_HexToLong(tostring(Flags))
-    | extend SessionFlags = set_difference(pack_array(
-        iif(binary_and(FlagsValue, 0x80000000) != 0, 'pcap',                ''),
-        iif(binary_and(FlagsValue, 0x40000000) != 0, 'multipath-allowed',   ''),
-        iif(binary_and(FlagsValue, 0x20000000) != 0, 'wildfire-submitted',  ''),
-        iif(binary_and(FlagsValue, 0x10000000) != 0, 'credential-detected', ''),
-        iif(binary_and(FlagsValue, 0x08000000) != 0, 'recon-excluded',      ''),
-        iif(binary_and(FlagsValue, 0x02000000) != 0, 'ipv6-session',        ''),
-        iif(binary_and(FlagsValue, 0x01000000) != 0, 'ssl-decrypted',       ''),
-        iif(binary_and(FlagsValue, 0x00800000) != 0, 'url-denied',          ''),
-        iif(binary_and(FlagsValue, 0x00400000) != 0, 'nat',                 ''),
-        iif(binary_and(FlagsValue, 0x00200000) != 0, 'captive-portal',      ''),
-        iif(binary_and(FlagsValue, 0x00100000) != 0, 'non-std-dport',       ''),
-        iif(binary_and(FlagsValue, 0x00080000) != 0, 'xff-in-source-user',  ''),
-        iif(binary_and(FlagsValue, 0x00040000) != 0, 'http-proxy-txn',      ''),
-        iif(binary_and(FlagsValue, 0x00008000) != 0, 'container-page',      ''),
-        iif(binary_and(FlagsValue, 0x00002000) != 0, 'temp-implicit-dep',   ''),
-        iif(binary_and(FlagsValue, 0x00000800) != 0, 'symmetric-return',    '')
+  with (docstring = 'Decode a PAN-OS hex Flags value into an array of session-flag names', folder = 'PaloAlto/Enrichment')
+  PaloAlto_DecodeSessionFlags(flags:string) {
+    let v = Shared_HexToLong(flags);
+    set_difference(pack_array(
+        iif(binary_and(v, 0x80000000) != 0, 'pcap',                ''),
+        iif(binary_and(v, 0x40000000) != 0, 'multipath-allowed',   ''),
+        iif(binary_and(v, 0x20000000) != 0, 'wildfire-submitted',  ''),
+        iif(binary_and(v, 0x10000000) != 0, 'credential-detected', ''),
+        iif(binary_and(v, 0x08000000) != 0, 'recon-excluded',      ''),
+        iif(binary_and(v, 0x02000000) != 0, 'ipv6-session',        ''),
+        iif(binary_and(v, 0x01000000) != 0, 'ssl-decrypted',       ''),
+        iif(binary_and(v, 0x00800000) != 0, 'url-denied',          ''),
+        iif(binary_and(v, 0x00400000) != 0, 'nat',                 ''),
+        iif(binary_and(v, 0x00200000) != 0, 'captive-portal',      ''),
+        iif(binary_and(v, 0x00100000) != 0, 'non-std-dport',       ''),
+        iif(binary_and(v, 0x00080000) != 0, 'xff-in-source-user',  ''),
+        iif(binary_and(v, 0x00040000) != 0, 'http-proxy-txn',      ''),
+        iif(binary_and(v, 0x00008000) != 0, 'container-page',      ''),
+        iif(binary_and(v, 0x00002000) != 0, 'temp-implicit-dep',   ''),
+        iif(binary_and(v, 0x00000800) != 0, 'symmetric-return',    '')
       ), dynamic(['']))
   }
 
@@ -120,7 +119,7 @@
                                   DeviceAction == 'alert', 'Alert', DeviceAction)
     | project-away _srcGeo, _dstGeo
     | lookup kind=leftouter PaloAlto_Lookup_SessionEndReason on Reason
-    | invoke PaloAlto_WithFlagBits()
+    | extend FlagsValue = Shared_HexToLong(Flags), SessionFlags = PaloAlto_DecodeSessionFlags(Flags)
   }
 
 .create-or-alter function
@@ -146,7 +145,7 @@
                                   DeviceAction startswith 'reset', 'Reset',
                                   DeviceAction == 'sinkhole', 'Sinkhole', DeviceAction)
     | project-away _srcGeo, _dstGeo
-    | invoke PaloAlto_WithFlagBits()
+    | extend FlagsValue = Shared_HexToLong(Flags), SessionFlags = PaloAlto_DecodeSessionFlags(Flags)
   }
 
 .create-or-alter function
@@ -174,5 +173,5 @@
 //      0x0      -> []
 // -------------------------------------------------------------------------------------
 datatable(Flags:string) ["0x400000", "0x100000", "0x54340d", "0x0"]
-| invoke PaloAlto_WithFlagBits()
+| extend FlagsValue = Shared_HexToLong(Flags), SessionFlags = PaloAlto_DecodeSessionFlags(Flags)
 | project Flags, FlagsValue, SessionFlags;
