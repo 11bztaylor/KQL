@@ -7,9 +7,8 @@
 //   This file does Palo Alto:
 //       PaloAlto_Traffic   <- PAN-OS TRAFFIC logs
 //       PaloAlto_Threat    <- PAN-OS THREAT logs (incl. url/virus/spyware/wildfire/file subtypes)
-//       PaloAlto_Audit     <- PAN-OS CONFIG logs (configuration-change audit trail)
-//       PaloAlto_Other     <- catch-all for every other $type (SYSTEM, HIPMATCH, USERID,
-//                             GLOBALPROTECT, AUTHENTICATION, DECRYPTION, CORRELATION, ...)
+//       PaloAlto           <- catch-all for every other $type (CONFIG, SYSTEM, HIPMATCH,
+//                             USERID, GLOBALPROTECT, AUTHENTICATION, DECRYPTION, ...)
 //
 // ROUTING / FILTERING  -- validated against a real sample (2026-06):
 //   The actual SyslogMessage arrives WITHOUT the "CEF:" token, e.g.:
@@ -234,16 +233,18 @@
 
 
 // -------------------------------------------------------------------------------------
-// 4) CONFIG  ->  PaloAlto_Audit   (configuration-change audit: who / what / result)
-//    NOTE: CONFIG logs use a different field set; cs* labels likely differ from TRAFFIC.
-//          Core fields are mapped here; everything else stays in AdditionalExtensions
-//          until a real CONFIG sample is available to finalize the projection.
+// 3) CATCH-ALL  ->  PaloAlto   (every $type except TRAFFIC/THREAT: CONFIG, SYSTEM,
+//    HIPMATCH, USERID, GLOBALPROTECT, ... -- nothing is dropped). No CONFIG sample was
+//    available to break out a dedicated audit table, so config-change detail lives here;
+//    the full raw extension is kept in AdditionalExtensions so it stays fully queryable.
+//    Promote any high-volume LogType (e.g. SYSTEM) to its own table later by excluding it
+//    here and copying the TRAFFIC pattern.
 // -------------------------------------------------------------------------------------
 .create-or-alter function
-  with (docstring = 'PAN-OS CONFIG (configuration-change audit) logs projected for the PaloAlto_Audit table', folder = 'PaloAlto')
-  PaloAlto_Audit_parse() {
+  with (docstring = 'PAN-OS logs of any type other than TRAFFIC/THREAT (CONFIG, SYSTEM, HIPMATCH, USERID, GLOBALPROTECT, ...)', folder = 'PaloAlto')
+  PaloAlto_parse() {
     PaloAlto_CEF_Parsed()
-    | where LogType == "CONFIG"
+    | where LogType !in ("TRAFFIC", "THREAT")
     | project
         TimeGenerated,
         DeviceVendor,
@@ -253,71 +254,28 @@
         SubType,
         LogSeverity,
         Computer,
-        DeviceName       = ['dvchost'],
-        FirewallSerial   = ['deviceExternalId'],
-        AdminUser        = ['suser'],     // administrator who made the change
-        ClientIP         = ['src'],       // host the admin connected from
-        ClientHost       = ['shost'],
-        Command          = ['act'],       // add / edit / delete / set / commit ...
-        Result           = ['outcome'],
-        Message          = ['msg'],
-        SequenceNumber   = ['externalId'],
-        ReceiptTime      = ['rt'],
-        AdditionalExtensions
-  }
-
-.create table PaloAlto_Audit (
-    TimeGenerated:datetime, DeviceVendor:string, DeviceProduct:string, DeviceVersion:string,
-    LogType:string, SubType:string, LogSeverity:string, Computer:string, DeviceName:string,
-    FirewallSerial:string, AdminUser:string, ClientIP:string, ClientHost:string, Command:string,
-    Result:string, Message:string, SequenceNumber:string, ReceiptTime:string, AdditionalExtensions:string
-)
-
-.alter table PaloAlto_Audit policy update
-'[{"IsEnabled":true,"Source":"Syslog","Query":"PaloAlto_Audit_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
-
-
-// -------------------------------------------------------------------------------------
-// 5) CATCH-ALL  ->  PaloAlto_Other   (every $type not handled above; nothing is dropped)
-//    Promote any of these (SYSTEM, HIPMATCH, GLOBALPROTECT, ...) to a dedicated table by
-//    excluding it here and copying the TRAFFIC pattern.
-// -------------------------------------------------------------------------------------
-.create-or-alter function
-  with (docstring = 'PAN-OS logs of any type not routed to a dedicated table (SYSTEM, HIPMATCH, USERID, GLOBALPROTECT, ...)', folder = 'PaloAlto')
-  PaloAlto_Other_parse() {
-    PaloAlto_CEF_Parsed()
-    | where LogType !in ("TRAFFIC", "THREAT", "CONFIG")
-    | project
-        TimeGenerated,
-        DeviceVendor,
-        DeviceProduct,
-        DeviceVersion,
-        LogType,
-        SubType,
-        LogSeverity,
-        Computer,
-        DeviceName       = ['dvchost'],
-        FirewallSerial   = ['deviceExternalId'],
-        SourceIP         = ['src'],
-        DestinationIP    = ['dst'],
-        SourceUserName   = ['suser'],
+        DeviceName          = ['dvchost'],
+        FirewallSerial      = ['deviceExternalId'],
+        SourceIP            = ['src'],
+        DestinationIP       = ['dst'],
+        UserName            = ['suser'],   // for CONFIG logs this is the administrator
         DestinationUserName = ['duser'],
-        DeviceAction     = ['act'],
-        EventCategory    = ['cat'],
-        Message          = ['msg'],
-        Result           = ['outcome'],
-        SequenceNumber   = ['externalId'],
-        ReceiptTime      = ['rt'],
+        DeviceAction        = ['act'],     // for CONFIG logs this is the command (add/edit/commit/...)
+        EventCategory       = ['cat'],
+        Message             = ['msg'],
+        Result              = ['outcome'],
+        SequenceNumber      = ['externalId'],
+        ReceiptTime         = ['rt'],
         AdditionalExtensions
   }
 
-.create table PaloAlto_Other (
+.create table PaloAlto (
     TimeGenerated:datetime, DeviceVendor:string, DeviceProduct:string, DeviceVersion:string,
     LogType:string, SubType:string, LogSeverity:string, Computer:string, DeviceName:string,
-    FirewallSerial:string, SourceIP:string, DestinationIP:string, SourceUserName:string,
+    FirewallSerial:string, SourceIP:string, DestinationIP:string, UserName:string,
     DestinationUserName:string, DeviceAction:string, EventCategory:string, Message:string,
     Result:string, SequenceNumber:string, ReceiptTime:string, AdditionalExtensions:string
 )
 
-.alter table PaloAlto_Other policy update
-'[{"IsEnabled":true,"Source":"Syslog","Query":"PaloAlto_Other_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
+.alter table PaloAlto policy update
+'[{"IsEnabled":true,"Source":"Syslog","Query":"PaloAlto_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
