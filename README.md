@@ -20,12 +20,30 @@ one table and nothing is silently dropped.
 
 | File | What it is |
 |------|------------|
-| [`PaloAlto_CEF.kql`](PaloAlto_CEF.kql) | **The deployable KQL** — base parser, per-table projection functions, `.create table`, and update policies. |
-| [`PaloAlto_tests.kql`](PaloAlto_tests.kql) | Parser tests. Feed synthetic CEF rows into the **real** `PaloAlto_CEF_ParseRows` function (no duplicated logic), assert field values, and check the non-Palo-Alto-excluded invariant. Touches no tables. |
-| [`enrichment.kql`](enrichment.kql) | Query-time enrichment: GeoIP, severity/direction/action labels, internal/external scope, session-end-reason descriptions, decoded session flags. Raw tables stay untouched. |
-| [`validation.kql`](validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
-| [`TESTING.md`](TESTING.md) | Deploy → test → verify → backfill runbook. |
-| [`SIDEQUEST.kql`](SIDEQUEST.kql) | One-off historical backfill: maps a CommonSecurityLog-shaped Search Job table (Palo Alto THREAT only) into `PaloAlto_Threat`, tagged and reversible. |
+| [`PaloAlto_CEF.kql`](paloalto/deploy/PaloAlto_CEF.kql) | **The deployable KQL** — base parser, per-table projection functions, `.create table`, and update policies. |
+| [`PaloAlto_tests.kql`](paloalto/tests/PaloAlto_tests.kql) | Parser tests. Feed synthetic CEF rows into the **real** `PaloAlto_CEF_ParseRows` function (no duplicated logic), assert field values, and check the non-Palo-Alto-excluded invariant. Touches no tables. |
+| [`enrichment.kql`](paloalto/enrichment/enrichment.kql) | Query-time enrichment: GeoIP, severity/direction/action labels, internal/external scope, session-end-reason descriptions, decoded session flags. Raw tables stay untouched. |
+| [`validation.kql`](paloalto/ops/validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
+| [`TESTING.md`](docs/TESTING.md) | Deploy → test → verify → backfill runbook. |
+| [`SIDEQUEST.kql`](paloalto/backfill/SIDEQUEST.kql) | One-off historical backfill: maps a CommonSecurityLog-shaped Search Job table (Palo Alto THREAT only) into `PaloAlto_Threat`, tagged and reversible. |
+
+## Repository layout
+
+Organized product-first (like Microsoft's Sentinel `Solutions/` layout) so each new vendor
+drops in as its own folder. KQL functions resolve by **name**, not path, so this structure is
+purely organizational — it doesn't affect deployment or cross-references.
+
+```
+README.md
+docs/TESTING.md
+paloalto/
+  deploy/PaloAlto_CEF.kql        functions + tables + update policies (one ordered file)
+  enrichment/enrichment.kql      query-time enrichment views
+  tests/PaloAlto_tests.kql       parser tests
+  ops/validation.kql             monitoring / reconciliation / drift / backfill
+  backfill/SIDEQUEST.kql         one-off historical THREAT backfill
+shared/                          (future) cross-vendor helpers
+```
 
 ## How it works
 
@@ -91,11 +109,11 @@ git clone https://github.com/11bztaylor/KQL.git
 cd KQL
 ```
 
-1. **Test the parser** (no deployment, zero risk): run [`PaloAlto_tests.kql`](PaloAlto_tests.kql) — expect 4 rows, all `Passed = true`.
-2. **Deploy**: run [`PaloAlto_CEF.kql`](PaloAlto_CEF.kql) top-to-bottom on your ADX database.
-3. **Verify**: once live data flows, run the reconciliation query in [`validation.kql`](validation.kql).
+1. **Test the parser** (no deployment, zero risk): run [`PaloAlto_tests.kql`](paloalto/tests/PaloAlto_tests.kql) — expect 4 rows, all `Passed = true`.
+2. **Deploy**: run [`PaloAlto_CEF.kql`](paloalto/deploy/PaloAlto_CEF.kql) top-to-bottom on your ADX database.
+3. **Verify**: once live data flows, run the reconciliation query in [`validation.kql`](paloalto/ops/validation.kql).
 
-See [`TESTING.md`](TESTING.md) for the full runbook, including backfilling existing `Syslog`
+See [`TESTING.md`](docs/TESTING.md) for the full runbook, including backfilling existing `Syslog`
 data (update policies are forward-only).
 
 ## Notes
