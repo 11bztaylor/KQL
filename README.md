@@ -26,6 +26,7 @@ one table and nothing is silently dropped.
 | [`validation.kql`](paloalto/ops/validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
 | [`TESTING.md`](docs/TESTING.md) | Deploy → test → verify → backfill runbook. |
 | [`SIDEQUEST.kql`](paloalto/backfill/SIDEQUEST.kql) | One-off historical backfill: maps a CommonSecurityLog-shaped Search Job table (Palo Alto THREAT only) into `PaloAlto_Threat`, tagged and reversible. |
+| [`shared/shared.kql`](shared/shared.kql) | Vendor-agnostic helpers: `Shared_HexToLong`, `Shared_SeverityLabel`, `Shared_Direction`, `Shared_IpScope`. Deploy **before** enrichment. |
 
 ## Repository layout
 
@@ -42,7 +43,7 @@ paloalto/
   tests/PaloAlto_tests.kql       parser tests
   ops/validation.kql             monitoring / reconciliation / drift / backfill
   backfill/SIDEQUEST.kql         one-off historical THREAT backfill
-shared/                          (future) cross-vendor helpers
+shared/shared.kql                vendor-agnostic helpers (hex, severity, direction, ip-scope)
 ```
 
 ## How it works

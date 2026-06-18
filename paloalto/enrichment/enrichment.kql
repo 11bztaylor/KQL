@@ -16,6 +16,10 @@
 //   To change a mapping, edit the lookup table (section 1) -- it applies to all history
 //   immediately, with no re-processing of the fact tables.
 //
+// PREREQUISITE
+//   Deploy shared/shared.kql first -- this file calls Shared_HexToLong / Shared_SeverityLabel
+//   / Shared_Direction / Shared_IpScope.
+//
 // SOURCES (verify against your PAN-OS version)
 //   - Session end reasons: PAN-OS Admin Guide, "Traffic Log Fields" (session_end_reason).
 //   - Traffic Flags bits:  PAN-OS Admin Guide, "Traffic Log Fields" (Flags). Bit meanings
@@ -58,22 +62,15 @@
 
 
 // -------------------------------------------------------------------------------------
-// 2) FLAG DECODER  -- adds FlagsValue (long) and SessionFlags (array of names) from a
-//    hex `Flags` string column. tolong() doesn't parse "0x..", so we convert the hex
-//    digits explicitly (integer-exact), then bit-test against the documented masks.
+// 2) FLAG DECODER  -- adds FlagsValue (long) and SessionFlags (array of names) from a hex
+//    `Flags` string column, via Shared_HexToLong() then bit-testing the documented PAN masks.
 //    Input table T must have a `Flags` column (PaloAlto_Traffic / PaloAlto_Threat do).
 // -------------------------------------------------------------------------------------
 .create-or-alter function
   with (docstring = 'Adds FlagsValue (long) and SessionFlags (decoded names) from a hex Flags column', folder = 'PaloAlto/Enrichment')
   PaloAlto_WithFlagBits(T:(*)) {
     T
-    | extend _fhex = tolower(replace_regex(tostring(Flags), @'^0[xX]', ''))
-    | extend _fhex = iff(isempty(_fhex), '0', _fhex)
-    | extend _digits = extract_all(@'[0-9a-f]', _fhex)
-    | extend _len = array_length(_digits)
-    | mv-apply with_itemindex = _i _ch = _digits to typeof(string) on (
-        summarize FlagsValue = sum(tolong(indexof('0123456789abcdef', _ch)) * binary_shift_left(tolong(1), (toint(_len) - 1 - _i) * 4))
-      )
+    | extend FlagsValue = Shared_HexToLong(tostring(Flags))
     | extend SessionFlags = set_difference(pack_array(
         iif(binary_and(FlagsValue, 0x80000000) != 0, 'pcap',                ''),
         iif(binary_and(FlagsValue, 0x40000000) != 0, 'multipath-allowed',   ''),
@@ -92,7 +89,6 @@
         iif(binary_and(FlagsValue, 0x00002000) != 0, 'temp-implicit-dep',   ''),
         iif(binary_and(FlagsValue, 0x00000800) != 0, 'symmetric-return',    '')
       ), dynamic(['']))
-    | project-away _fhex, _digits, _len
   }
 
 
@@ -114,11 +110,9 @@
         DestinationCity    = tostring(_dstGeo.city),
         DestinationLatitude  = toreal(_dstGeo.latitude),
         DestinationLongitude = toreal(_dstGeo.longitude),
-        SourceScope        = case(isempty(SourceIP), '',      ipv4_is_private(SourceIP), 'internal', 'external'),
-        DestinationScope   = case(isempty(DestinationIP), '', ipv4_is_private(DestinationIP), 'internal', 'external'),
-        SeverityLabel      = case(isempty(LogSeverity), '', isnull(toint(LogSeverity)), LogSeverity,
-                                  toint(LogSeverity) <= 3, 'Low', toint(LogSeverity) <= 6, 'Medium',
-                                  toint(LogSeverity) <= 8, 'High', 'Very-High'),
+        SourceScope        = Shared_IpScope(SourceIP),
+        DestinationScope   = Shared_IpScope(DestinationIP),
+        SeverityLabel      = Shared_SeverityLabel(LogSeverity),
         SimplifiedAction   = case(DeviceAction in ('allow','start','end'), 'Allow',
                                   DeviceAction in ('deny','drop','drop-icmp','drop-all'), 'Deny',
                                   DeviceAction startswith 'reset', 'Reset',
@@ -143,12 +137,10 @@
         DestinationCity    = tostring(_dstGeo.city),
         DestinationLatitude  = toreal(_dstGeo.latitude),
         DestinationLongitude = toreal(_dstGeo.longitude),
-        SourceScope        = case(isempty(SourceIP), '',      ipv4_is_private(SourceIP), 'internal', 'external'),
-        DestinationScope   = case(isempty(DestinationIP), '', ipv4_is_private(DestinationIP), 'internal', 'external'),
-        SeverityLabel      = case(isempty(LogSeverity), '', isnull(toint(LogSeverity)), LogSeverity,
-                                  toint(LogSeverity) <= 3, 'Low', toint(LogSeverity) <= 6, 'Medium',
-                                  toint(LogSeverity) <= 8, 'High', 'Very-High'),
-        DirectionLabel     = case(CommunicationDirection == '0', 'Inbound', CommunicationDirection == '1', 'Outbound', CommunicationDirection),
+        SourceScope        = Shared_IpScope(SourceIP),
+        DestinationScope   = Shared_IpScope(DestinationIP),
+        SeverityLabel      = Shared_SeverityLabel(LogSeverity),
+        DirectionLabel     = Shared_Direction(CommunicationDirection),
         SimplifiedAction   = case(DeviceAction in ('allow','alert'), 'Allow',
                                   DeviceAction in ('deny','drop','drop-icmp','block','block-url','block-ip'), 'Deny',
                                   DeviceAction startswith 'reset', 'Reset',
@@ -167,10 +159,8 @@
         SourceCity      = tostring(_srcGeo.city),
         SourceLatitude  = toreal(_srcGeo.latitude),
         SourceLongitude = toreal(_srcGeo.longitude),
-        SourceScope     = case(isempty(SourceIP), '', ipv4_is_private(SourceIP), 'internal', 'external'),
-        SeverityLabel   = case(isempty(LogSeverity), '', isnull(toint(LogSeverity)), LogSeverity,
-                               toint(LogSeverity) <= 3, 'Low', toint(LogSeverity) <= 6, 'Medium',
-                               toint(LogSeverity) <= 8, 'High', 'Very-High')
+        SourceScope     = Shared_IpScope(SourceIP),
+        SeverityLabel   = Shared_SeverityLabel(LogSeverity)
     | project-away _srcGeo
   }
 

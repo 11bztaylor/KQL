@@ -1,0 +1,101 @@
+// =====================================================================================
+// shared/shared.kql  --  vendor-agnostic helper functions
+// =====================================================================================
+// Reusable across any vendor's parsers/enrichment. KQL functions resolve by name, so these
+// are callable from any other file once deployed. Deploy this BEFORE files that use them
+// (e.g. paloalto/enrichment/enrichment.kql).
+//
+// Geo enrichment is intentionally NOT wrapped here: geo_info_from_ip_address() is a built-in
+// that returns several fields in one call, so vendors call it inline (one call, many columns)
+// rather than via per-field wrappers.
+// =====================================================================================
+
+
+// -------------------------------------------------------------------------------------
+// Shared_HexToLong  --  parse a hex string ("0x1a2b" or "1a2b") to a long, integer-exact.
+//   Kusto's tolong() does NOT parse "0x.." strings, so we sum the digits positionally.
+//   Left-pads to 16 hex digits (64 bits); two's-complement wrap preserves the bit pattern
+//   for the top bit (e.g. 0x8000000000000000), so binary_and() tests still work.
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'Parse a hex string (with or without 0x) to a long; integer-exact, 64-bit safe', folder = 'Shared')
+  Shared_HexToLong(hex:string) {
+    let a = '0123456789abcdef';
+    let s = tolower(trim_start(@'0[xX]', tostring(hex)));
+    let p = substring(strcat(strrep('0', 16), s), strlen(s));   // last 16 chars (left-padded)
+      tolong(indexof(a, substring(p,  0, 1))) * binary_shift_left(tolong(1), 60)
+    + tolong(indexof(a, substring(p,  1, 1))) * binary_shift_left(tolong(1), 56)
+    + tolong(indexof(a, substring(p,  2, 1))) * binary_shift_left(tolong(1), 52)
+    + tolong(indexof(a, substring(p,  3, 1))) * binary_shift_left(tolong(1), 48)
+    + tolong(indexof(a, substring(p,  4, 1))) * binary_shift_left(tolong(1), 44)
+    + tolong(indexof(a, substring(p,  5, 1))) * binary_shift_left(tolong(1), 40)
+    + tolong(indexof(a, substring(p,  6, 1))) * binary_shift_left(tolong(1), 36)
+    + tolong(indexof(a, substring(p,  7, 1))) * binary_shift_left(tolong(1), 32)
+    + tolong(indexof(a, substring(p,  8, 1))) * binary_shift_left(tolong(1), 28)
+    + tolong(indexof(a, substring(p,  9, 1))) * binary_shift_left(tolong(1), 24)
+    + tolong(indexof(a, substring(p, 10, 1))) * binary_shift_left(tolong(1), 20)
+    + tolong(indexof(a, substring(p, 11, 1))) * binary_shift_left(tolong(1), 16)
+    + tolong(indexof(a, substring(p, 12, 1))) * binary_shift_left(tolong(1), 12)
+    + tolong(indexof(a, substring(p, 13, 1))) * binary_shift_left(tolong(1),  8)
+    + tolong(indexof(a, substring(p, 14, 1))) * binary_shift_left(tolong(1),  4)
+    + tolong(indexof(a, substring(p, 15, 1)))
+  }
+
+
+// -------------------------------------------------------------------------------------
+// Shared_SeverityLabel  --  CEF numeric severity (0-10) -> Low/Medium/High/Very-High.
+//   Passes a non-numeric value through unchanged; empty stays empty.
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'CEF numeric severity (0-10) to Low/Medium/High/Very-High', folder = 'Shared')
+  Shared_SeverityLabel(severity:string) {
+    case(isempty(severity),            '',
+         isnull(toint(severity)),      severity,
+         toint(severity) <= 3,         'Low',
+         toint(severity) <= 6,         'Medium',
+         toint(severity) <= 8,         'High',
+                                       'Very-High')
+  }
+
+
+// -------------------------------------------------------------------------------------
+// Shared_Direction  --  CEF deviceDirection 0/1 -> Inbound/Outbound (passthrough otherwise).
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'CEF deviceDirection 0/1 to Inbound/Outbound', folder = 'Shared')
+  Shared_Direction(direction:string) {
+    case(tostring(direction) == '0', 'Inbound',
+         tostring(direction) == '1', 'Outbound',
+                                     tostring(direction))
+  }
+
+
+// -------------------------------------------------------------------------------------
+// Shared_IpScope  --  classify an IPv4 address as internal (RFC1918) or external.
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'Classify an IPv4 address as internal (RFC1918) or external', folder = 'Shared')
+  Shared_IpScope(ip:string) {
+    case(isempty(ip),            '',
+         ipv4_is_private(ip),    'internal',
+                                 'external')
+  }
+
+
+// -------------------------------------------------------------------------------------
+// SELF-TEST  -- run after deploying. All rows should show Passed == true.
+// -------------------------------------------------------------------------------------
+datatable(Case:string, Got:string, Want:string)
+[
+    "HexToLong 0x400000",  tostring(Shared_HexToLong("0x400000")),  tostring(4194304),
+    "HexToLong 1a2b",      tostring(Shared_HexToLong("1a2b")),      tostring(6699),
+    "HexToLong 0x0",       tostring(Shared_HexToLong("0x0")),       tostring(0),
+    "Severity 2",          Shared_SeverityLabel("2"),               "Low",
+    "Severity 7",          Shared_SeverityLabel("7"),               "High",
+    "Severity 10",         Shared_SeverityLabel("10"),              "Very-High",
+    "Direction 1",         Shared_Direction("1"),                   "Outbound",
+    "IpScope 10.1.1.1",    Shared_IpScope("10.1.1.1"),              "internal",
+    "IpScope 8.8.8.8",     Shared_IpScope("8.8.8.8"),               "external"
+]
+| extend Passed = (Got == Want)
+| project Case, Passed, Got, Want;
