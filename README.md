@@ -83,7 +83,10 @@
         ['PanPolicyID']:string, ['PanLinkDetail']:string,
         ['PanSDWANCluster']:string, ['PanSDWANDevice']:string, ['PanSDWANClustype']:string, ['PanSDWANSite']:string,
         ['PanSrcEDL']:string, ['PanDstEDL']:string, ['PanGPHostID']:string,
-        ['PanSrcDAG']:string, ['PanDstDAG']:string, ['PanHASessionOwner']:string
+        ['PanSrcDAG']:string, ['PanDstDAG']:string, ['PanHASessionOwner']:string,
+        // --- additional keys seen in THREAT logs (declared so greedy boundaries hold) ---
+        ['fileId']:string, ['requestClientApplication']:string, ['PanOSHTTPHeader']:string,
+        ['PanOSURLCatList']:string, ['PanDynamicUsrgrp']:string
       )
       with (pair_delimiter = ' ', kv_delimiter = '=', greedy = true)
     | extend AdditionalExtensions = _ext
@@ -183,36 +186,40 @@
         SubType,
         LogSeverity,
         Computer,
-        DeviceName             = ['dvchost'],
-        FirewallSerial         = ['deviceExternalId'],
-        SourceIP               = ['src'],
-        SourcePort             = ['spt'],
-        DestinationIP          = ['dst'],
-        DestinationPort        = ['dpt'],
-        Protocol               = ['proto'],
-        ApplicationProtocol    = ['app'],
-        DeviceAction           = ['act'],
-        CommunicationDirection = ['deviceDirection'],
-        SourceUserName         = ['suser'],
-        DestinationUserName    = ['duser'],
-        RequestURL             = ['request'],
-        RequestContext         = ['requestContext'],
-        RequestMethod          = ['requestMethod'],
-        FileName               = ['fname'],
-        FilePath               = ['filePath'],
-        FileHash               = ['fileHash'],
-        ThreatCategory         = ['cat'],
-        Message                = ['msg'],
-        SessionID              = ['cn1'],           // cn1Label=SessionID
-        SequenceNumber         = ['externalId'],
-        RuleName               = ['cs1'],           // cs1Label=Rule
-        URLCategory            = ['cs2'],           // cs2Label=URL Category
-        SourceZone             = ['cs4'],           // cs4Label=Source Zone
-        DestinationZone        = ['cs5'],           // cs5Label=Destination Zone
-        LogProfile             = ['cs6'],           // cs6Label=LogProfile
-        Flags                  = ['flexString1'],   // flexString1Label=Flags
-        RuleUUID               = ['PanOSRuleUUID'],
-        ReceiptTime            = ['rt'],
+        DeviceName               = ['dvchost'],
+        FirewallSerial           = ['deviceExternalId'],
+        SourceIP                 = ['src'],
+        SourcePort               = ['spt'],
+        DestinationIP            = ['dst'],
+        DestinationPort          = ['dpt'],
+        Protocol                 = ['proto'],
+        ApplicationProtocol      = ['app'],
+        DeviceAction             = ['act'],
+        CommunicationDirection   = ['deviceDirection'],
+        Direction                = ['flexString2'],   // flexString2Label=Direction (client-to-server/...)
+        SourceUserName           = ['suser'],
+        DestinationUserName      = ['duser'],
+        RequestURL               = trim('"', tostring(['request'])),
+        RequestMethod            = ['requestMethod'],
+        RequestClientApplication = ['requestClientApplication'],
+        RequestContext           = ['requestContext'],
+        FileName                 = ['fname'],
+        FilePath                 = ['filePath'],
+        FileHash                 = ['fileHash'],
+        FileID                   = ['fileId'],
+        ThreatCategory           = ['cat'],
+        URLCategory              = ['cs2'],           // cs2Label=URL Category
+        URLCategoryList          = trim('"', tostring(['PanOSURLCatList'])),
+        Message                  = ['msg'],
+        SessionID                = ['cn1'],           // cn1Label=SessionID
+        SequenceNumber           = ['externalId'],
+        RuleName                 = ['cs1'],           // cs1Label=Rule
+        SourceZone               = ['cs4'],           // cs4Label=Source Zone
+        DestinationZone          = ['cs5'],           // cs5Label=Destination Zone
+        LogProfile               = ['cs6'],           // cs6Label=LogProfile
+        Flags                    = ['flexString1'],   // flexString1Label=Flags
+        RuleUUID                 = ['PanOSRuleUUID'],
+        ReceiptTime              = ['rt'],
         AdditionalExtensions
   }
 
@@ -221,9 +228,10 @@
     LogType:string, SubType:string, LogSeverity:string, Computer:string, DeviceName:string,
     FirewallSerial:string, SourceIP:string, SourcePort:int, DestinationIP:string, DestinationPort:int,
     Protocol:string, ApplicationProtocol:string, DeviceAction:string, CommunicationDirection:string,
-    SourceUserName:string, DestinationUserName:string, RequestURL:string, RequestContext:string,
-    RequestMethod:string, FileName:string, FilePath:string, FileHash:string, ThreatCategory:string,
-    Message:string, SessionID:int, SequenceNumber:string, RuleName:string, URLCategory:string,
+    Direction:string, SourceUserName:string, DestinationUserName:string, RequestURL:string,
+    RequestMethod:string, RequestClientApplication:string, RequestContext:string, FileName:string,
+    FilePath:string, FileHash:string, FileID:string, ThreatCategory:string, URLCategory:string,
+    URLCategoryList:string, Message:string, SessionID:int, SequenceNumber:string, RuleName:string,
     SourceZone:string, DestinationZone:string, LogProfile:string, Flags:string, RuleUUID:string,
     ReceiptTime:string, AdditionalExtensions:string
 )
