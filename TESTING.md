@@ -10,16 +10,23 @@ Files in this repo:
 
 ---
 
-## Step 1 — Test the parser logic (no deployment, zero risk)
+## Step 1 — Test the parser logic
 
-Run this **first**. It proves the parsing is correct before anything touches your cluster.
+The tests feed synthetic CEF rows into the **real** parser function (`PaloAlto_CEF_ParseRows`),
+so they catch any regression in the deployed logic — but that means the parser function must
+exist first.
 
-1. Open `PaloAlto_tests.kql`, paste the whole file into an ADX/Kusto query window, run it.
-2. **Expected result:** 4 rows, every `Passed == true`, every `Details` empty.
-   - `TRAFFIC_drop_13.5`, `TRAFFIC_allow_10.1`, `THREAT_url_10.1`, `USERID_login_10.1`.
-3. If any row shows `Passed == false`, the `Details` column names the field(s) that didn't match the expected value.
+1. Deploy the two parser functions from `PaloAlto_CEF.kql` (`PaloAlto_CEF_ParseRows` and
+   `PaloAlto_CEF_Parsed`) — or just run the whole file (Step 2).
+2. Open `PaloAlto_tests.kql`, paste it into an ADX/Kusto query window, run it. It returns **two** tables:
+   - **A) Field assertions** — 4 rows, every `Passed == true`, every `Details` empty
+     (`TRAFFIC_drop_13.5`, `TRAFFIC_allow_10.1`, `THREAT_url_10.1`, `USERID_login_10.1`).
+   - **B) Invariant check** — `Passed == true`: the non-Palo-Alto (Cisco) row is dropped and
+     exactly the 4 Palo Alto rows survive across 3 log types.
+3. If a field assertion fails, `Details` names the field(s) that didn't match.
 
-This requires no tables and deploys nothing — safe to run on any database.
+The tests still touch **no real tables** — synthetic rows go straight into the function — so
+they're safe to run anywhere the parser is deployed.
 
 ---
 

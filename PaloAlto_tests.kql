@@ -1,36 +1,40 @@
 // =====================================================================================
-// PaloAlto_tests.kql  --  self-contained parser test harness
+// PaloAlto_tests.kql  --  parser tests that exercise the REAL deployed code
 // =====================================================================================
-// WHAT THIS DOES
-//   Runs the exact PaloAlto_CEF_Parsed() parse logic against representative sample
-//   messages (2x TRAFFIC, 1x THREAT/url, 1x USERID/login) and asserts that the key fields
-//   land in the right columns with the expected values.
+// WHAT CHANGED / WHY
+//   These tests feed synthetic CEF rows into the ACTUAL production parser
+//   (PaloAlto_CEF_ParseRows) -- they do NOT re-implement the parse. So a change to
+//   PaloAlto_CEF.kql that breaks extraction WILL fail a test here (no silent drift), and
+//   there's no duplicated parse-kv schema to keep in sync.
 //
-// HOW TO RUN
-//   Paste this whole file into an ADX / Kusto query window and run it. It touches NO
-//   tables and deploys nothing -- safe to run anywhere, before or after deploying
-//   PaloAlto_CEF.kql. Every row in the result should show Passed == true and an empty
-//   Details. A non-empty Details lists which field(s) failed for that sample.
+// PREREQUISITE
+//   Deploy PaloAlto_CEF.kql first (at least PaloAlto_CEF_ParseRows). The tests still touch
+//   NO real tables -- they pass a datatable straight into the function.
 //
-// NOTE: all values below are FAKE but representative -- documentation IP ranges
-//   (RFC 5737 / RFC 1918), example.com-style users, and placeholder rule/zone/profile
-//   names. Replace with your own captures if you want to test against real layouts.
+// RESULTS (two tables)
+//   A) Field assertions -- every row Passed == true, Details empty.
+//   B) Invariant check  -- the non-Palo-Alto (Cisco) row is dropped and exactly the 4
+//      Palo Alto rows survive. This is a property the parser must hold; it is not an
+//      input/expected value we supply.
+//
+//   Sample values are FAKE but representative (RFC 5737/1918 IPs, example users).
 // =====================================================================================
 
-// --- three representative samples (fake but realistic data) --------------------------
-let Samples = datatable(TestName:string, SyslogMessage:string)
+let FakeSyslog = datatable(TestName:string, TimeGenerated:datetime, Computer:string, SyslogMessage:string)
 [
-  "TRAFFIC_drop_13.5",
+  "TRAFFIC_drop_13.5", datetime(2026-06-15T14:58:03Z), "fw-edge-01",
     "0|Palo Alto Networks|PAN-OS|13.5.60-h10|drop|TRAFFIC|1|rt=Jun 15 2026 14:58:03 GMT deviceExternalId=012345678901 src=10.20.30.40 dst=203.0.113.45 sourceTranslatedAddress=0.0.0.0 destinationTranslatedAddress=0.0.0.0 cs1Label=Rule cs1=Deny-Inbound-Default suser= duser= app=not-applicable cs4Label=Source Zone cs4=untrust cs5Label=Destination Zone cs5=trust deviceInboundInterface=ae5 deviceOutboundInterface= cs6Label=LogProfile cs6=Net-LogProfile-01 cn1Label=SessionID cn1=0 cnt=1 spt=50234 dpt=7680 sourceTranslatedPort=0 destinationTranslatedPort=0 flexString1Label=Flags flexString1=0x0 proto=tcp act=drop flexNumber1Label=Total bytes flexNumber1=66 in=0 out=66 cn2Label=Packets cn2=1 PanOSPacketsReceived=0 PanOSPacketsSent=1 start=Jun 15 2026 14:58:03 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=any externalId=7239847239847 reason=policy-deny dvchost=fw-edge-01 cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=b2e9c1a4-5f3d-4c8e-9a1b-2d3e4f5a6b7c PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
-  "TRAFFIC_allow_10.1",
+  "TRAFFIC_allow_10.1", datetime(2026-06-18T19:51:32Z), "fw-edge-02",
     "0|Palo Alto Networks|PAN-OS|10.1.10-i11|end|TRAFFIC|1|rt=Jun 18 2026 19:51:32 GMT deviceExternalId=012345678902 src=10.20.30.55 dst=23.50.60.70 sourceTranslatedAddress=198.51.100.10 destinationTranslatedAddress=23.50.60.70 cs1Label=Rule cs1=Allow-Outbound-Web suser=jdoe@contoso.com duser= app=ssl cs4Label=Source Zone cs4=trust cs5Label=Destination Zone cs5=untrust deviceInboundInterface=ae7 deviceOutboundInterface=ae3 cs6Label=LogProfile cs6=Net-LogProfile-01 cn1Label=SessionID cn1=2546623 cnt=1 spt=54655 dpt=443 sourceTranslatedPort=54902 destinationTranslatedPort=443 flexString1Label=Flags flexString1=0x54340d proto=tcp act=allow flexNumber1Label=Total bytes flexNumber1=2080 in=60 out=2020 cn2Label=Packets cn2=4 PanOSPacketsReceived=1 PanOSPacketsSent=4 start=Jun 18 2026 19:51:32 GMT cn3Label=Elapsed time in seconds cn3=0 cs2Label=URL Category cs2=web-advertisements externalId=7239847239901 reason=aged-out dvchost=fw-edge-02 cat=from-policy PanOSSCTPAssocID=0 PanOSSCTPChunks=0 PanOSSCTPChunkSent=0 PanOSSCTPChunksRcv=0 PanOSRuleUUID=c3f0d2b5-6a4e-4d9f-8b2c-3e4f5a6b7c8d PanOSHTTP2Con=0 PanLinkChange=0 PanPolicyID= PanLinkDetail= PanSDWANCluster= PanSDWANDevice= PanSDWANClustype= PanSDWANSite= PanSrcEDL= PanDstEDL= PanGPHostID= PanSrcDAG= PanDstDAG= PanHASessionOwner=",
-  "THREAT_url_10.1",
+  "THREAT_url_10.1", datetime(2026-06-18T20:02:34Z), "fw-edge-02",
     "0|Palo Alto Networks|PAN-OS|10.1.10-h10|url|THREAT|1|rt=Jun 18 2026 20:02:34 GMT deviceExternalId=012345678903 src=10.20.30.77 dst=20.190.160.10 sourceTranslatedAddress=198.51.100.20 destinationTranslatedAddress=20.190.160.10 cs1Label=Rule cs1=Outbound-URL-Inspect suser=asmith@contoso.com duser= app=ssl cs4Label=Source Zone cs4=trust cs5Label=Destination Zone cs5=untrust deviceInboundInterface=ae7 deviceOutboundInterface=ae1 cs6Label=LogProfile cs6=Threat-LogProfile-01 cn1Label=SessionID cn1=500741 cnt=1 spt=65171 dpt=443 sourceTranslatedPort=36856 destinationTranslatedPort=443 flexString1Label=Flags flexString1=0x1a2b3c proto=tcp act=alert request=\"mobile.events.data.microsoft.com/\" cs2Label=URL Category cs2=computer-and-internet-info flexString2Label=Direction flexString2=client-to-server externalId=7239847240015 requestContext= cat=(9999) fileId=0 requestMethod= requestClientApplication= dvchost=fw-edge-02 PanOSHTTPHeader= PanOSRuleUUID=d4a1e3c6-7b5f-4e0a-9c3d-4f5a6b7c8d9e PanOSURLCatList=\"SharedDocDefenderUrl,computer-and-internet-info,low-risk\" PanOSHTTP2Con=0 PanDynamicUsrgrp=",
-  "USERID_login_10.1",
-    "0|Palo Alto Networks|PAN-OS|10.1.11-h5|login|USERID|1|rt=Jun 18 2026 21:06:10 GMT deviceExternalId=012345678904 cs4Label=Data Source Name cs4=AD-Agent-01 cs5Label=Data Source Type cs5=agent cs6Label=Data Source Direction cs6= cn1Label=Factor Number cn1=1 cn2Label=Virtual System ID cn2=1 cn3Label=Timeout Threshold cn3=14400 src=10.20.30.88 spt=0 dpt=0 cnt=1 duser=jdoe@contoso.com externalId=7239847240120 cat=0 end=2026/06/18 14:06:09 PanOSVsysName= dvchost=fw-edge-02 PanOSActionFlags=0x8000000000000000 PanOSUGFlags=0x80000000 PanOSUserBySource=contoso\\jdoe"
+  "USERID_login_10.1", datetime(2026-06-18T21:06:10Z), "fw-edge-02",
+    "0|Palo Alto Networks|PAN-OS|10.1.11-h5|login|USERID|1|rt=Jun 18 2026 21:06:10 GMT deviceExternalId=012345678904 cs4Label=Data Source Name cs4=AD-Agent-01 cs5Label=Data Source Type cs5=agent cs6Label=Data Source Direction cs6= cn1Label=Factor Number cn1=1 cn2Label=Virtual System ID cn2=1 cn3Label=Timeout Threshold cn3=14400 src=10.20.30.88 spt=0 dpt=0 cnt=1 duser=jdoe@contoso.com externalId=7239847240120 cat=0 end=2026/06/18 14:06:09 PanOSVsysName= dvchost=fw-edge-02 PanOSActionFlags=0x8000000000000000 PanOSUGFlags=0x80000000 PanOSUserBySource=contoso\\jdoe",
+  // NEGATIVE: a non-Palo-Alto CEF row -- the parser MUST drop this.
+  "NEGATIVE_cisco_asa", datetime(2026-06-18T21:10:00Z), "asa-1",
+    "CEF:0|Cisco|ASA|9.1|106023|Deny protocol src|3|src=10.0.0.1 dst=10.0.0.2 spt=1234 dpt=443 act=Deny"
 ];
-
-// --- expected values (assertions) ----------------------------------------------------
+//
 let Expected = datatable(TestName:string, ExpLogType:string, ExpSubType:string, ExpVersion:string, ExpDPt:int, ExpAction:string, ExpRule:string, ExpUrlCat:string, ExpSession:long, ExpRequest:string, ExpDirection:string)
 [
   "TRAFFIC_drop_13.5",  "TRAFFIC", "drop", "13.5.60-h10", 7680, "drop",  "Deny-Inbound-Default", "any",                        0,       "",                                  "",
@@ -38,74 +42,45 @@ let Expected = datatable(TestName:string, ExpLogType:string, ExpSubType:string, 
   "THREAT_url_10.1",    "THREAT",  "url",  "10.1.10-h10", 443,  "alert", "Outbound-URL-Inspect", "computer-and-internet-info", 500741,  "mobile.events.data.microsoft.com/", "client-to-server",
   "USERID_login_10.1",  "USERID",  "login","10.1.11-h5",  0,    "",      "",                     "",                           1,       "",                                  ""
 ];
-
-// --- parse (mirrors PaloAlto_CEF_Parsed() in PaloAlto_CEF.kql) -----------------------
-Samples
-| extend _p = split(SyslogMessage, '|')
-| where tostring(_p[1]) == "Palo Alto Networks"
-| extend DeviceVendor = tostring(_p[1]), DeviceProduct = tostring(_p[2]), DeviceVersion = tostring(_p[3]),
-         SubType = tostring(_p[4]), LogType = toupper(tostring(_p[5])), LogSeverity = tostring(_p[6])
-| extend _ext = strcat_array(array_slice(_p, 7, -1), '|')
-| parse-kv _ext as (
-    ['act']:string, ['app']:string, ['cat']:string, ['cnt']:int,
-    ['deviceDirection']:string, ['deviceExternalId']:string,
-    ['deviceInboundInterface']:string, ['deviceOutboundInterface']:string,
-    ['destinationServiceName']:string, ['destinationTranslatedAddress']:string, ['destinationTranslatedPort']:int,
-    ['dhost']:string, ['dmac']:string, ['dntdom']:string, ['dpid']:int, ['dpt']:int, ['dproc']:string, ['dpriv']:string,
-    ['dst']:string, ['dtz']:string, ['duid']:string, ['duser']:string,
-    ['dvc']:string, ['dvchost']:string, ['dvcmac']:string,
-    ['end']:string, ['externalId']:string,
-    ['fileHash']:string, ['filePath']:string, ['fname']:string,
-    ['in']:long, ['msg']:string, ['out']:long, ['outcome']:string, ['proto']:string, ['reason']:string,
-    ['request']:string, ['requestContext']:string, ['requestMethod']:string, ['rt']:string,
-    ['shost']:string, ['smac']:string, ['sntdom']:string, ['sourceServiceName']:string,
-    ['sourceTranslatedAddress']:string, ['sourceTranslatedPort']:int,
-    ['spid']:int, ['spriv']:string, ['sproc']:string, ['spt']:int, ['src']:string, ['start']:string, ['suid']:string, ['suser']:string,
-    ['cs1']:string, ['cs1Label']:string, ['cs2']:string, ['cs2Label']:string, ['cs3']:string, ['cs3Label']:string,
-    ['cs4']:string, ['cs4Label']:string, ['cs5']:string, ['cs5Label']:string, ['cs6']:string, ['cs6Label']:string,
-    ['cn1']:int, ['cn1Label']:string, ['cn2']:int, ['cn2Label']:string, ['cn3']:int, ['cn3Label']:string,
-    ['flexString1']:string, ['flexString1Label']:string, ['flexString2']:string, ['flexString2Label']:string,
-    ['flexNumber1']:long, ['flexNumber1Label']:string, ['flexNumber2']:long, ['flexNumber2Label']:string,
-    ['PanOSPacketsReceived']:long, ['PanOSPacketsSent']:long,
-    ['PanOSSCTPAssocID']:long, ['PanOSSCTPChunks']:long, ['PanOSSCTPChunkSent']:long, ['PanOSSCTPChunksRcv']:long,
-    ['PanOSRuleUUID']:string, ['PanOSHTTP2Con']:int, ['PanLinkChange']:int,
-    ['PanPolicyID']:string, ['PanLinkDetail']:string,
-    ['PanSDWANCluster']:string, ['PanSDWANDevice']:string, ['PanSDWANClustype']:string, ['PanSDWANSite']:string,
-    ['PanSrcEDL']:string, ['PanDstEDL']:string, ['PanGPHostID']:string,
-    ['PanSrcDAG']:string, ['PanDstDAG']:string, ['PanHASessionOwner']:string,
-    ['fileId']:string, ['requestClientApplication']:string, ['PanOSHTTPHeader']:string,
-    ['PanOSURLCatList']:string, ['PanDynamicUsrgrp']:string,
-    ['PanOSVsysName']:string, ['PanOSActionFlags']:string, ['PanOSUGFlags']:string, ['PanOSUserBySource']:string
-  )
-  with (pair_delimiter = ' ', kv_delimiter = '=', greedy = true)
+//
+// --- A) FIELD ASSERTIONS against the REAL parser ------------------------------------
+PaloAlto_CEF_ParseRows(FakeSyslog)
 | project
-    TestName, LogType, SubType, DeviceVendor, DeviceProduct, DeviceVersion,
-    SourceIP = ['src'], DestinationIP = ['dst'], SourcePort = ['spt'], DestinationPort = ['dpt'],
-    Protocol = ['proto'], ApplicationProtocol = ['app'], DeviceAction = ['act'],
-    RuleName = ['cs1'], URLCategory = ['cs2'], SourceZone = ['cs4'], DestinationZone = ['cs5'], LogProfile = ['cs6'],
-    SessionID = ['cn1'], PacketCount = ['cn2'], TotalBytes = ['flexNumber1'],
-    Direction = ['flexString2'],
-    RequestURL = trim('"', tostring(['request'])),
-    URLCategoryList = trim('"', tostring(['PanOSURLCatList'])),
-    SequenceNumber = ['externalId']
-// --- assert against expected ---------------------------------------------------------
-| join kind=leftouter Expected on TestName
+    TestName,
+    LogType, SubType, DeviceVendor, DeviceProduct, DeviceVersion,
+    DestinationPort = toint(['dpt']),
+    DeviceAction    = tostring(['act']),
+    RuleName        = tostring(['cs1']),
+    URLCategory     = tostring(['cs2']),
+    SessionID       = toint(['cn1']),
+    RequestURL      = trim('"', tostring(['request'])),
+    Direction       = tostring(['flexString2'])
+| join kind=inner Expected on TestName
 | extend Details = strcat(
-    iff(LogType        == ExpLogType,   "", "LogType "),
-    iff(SubType        == ExpSubType,   "", "SubType "),
-    iff(DeviceVendor   == "Palo Alto Networks", "", "Vendor "),
-    iff(DeviceProduct  == "PAN-OS",     "", "Product "),
-    iff(DeviceVersion  == ExpVersion,   "", "Version "),
-    iff(DestinationPort == ExpDPt,      "", "DestPort "),
-    iff(DeviceAction   == ExpAction,    "", "Action "),
-    iff(RuleName       == ExpRule,      "", "RuleName "),
-    iff(URLCategory    == ExpUrlCat,    "", "URLCategory "),
-    iff(SessionID      == ExpSession,   "", "SessionID "),
-    iff(RequestURL     == ExpRequest,   "", "RequestURL "),
-    iff(Direction      == ExpDirection, "", "Direction ")
+    iff(LogType         == ExpLogType,           "", "LogType "),
+    iff(SubType         == ExpSubType,           "", "SubType "),
+    iff(DeviceVendor    == "Palo Alto Networks", "", "Vendor "),
+    iff(DeviceProduct   == "PAN-OS",             "", "Product "),
+    iff(DeviceVersion   == ExpVersion,           "", "Version "),
+    iff(DestinationPort == ExpDPt,               "", "DestPort "),
+    iff(DeviceAction    == ExpAction,            "", "Action "),
+    iff(RuleName        == ExpRule,              "", "RuleName "),
+    iff(URLCategory     == ExpUrlCat,            "", "URLCategory "),
+    iff(SessionID       == ExpSession,           "", "SessionID "),
+    iff(RequestURL      == ExpRequest,           "", "RequestURL "),
+    iff(Direction       == ExpDirection,         "", "Direction ")
   )
 | extend Passed = isempty(Details)
-| project TestName, Passed, Details, LogType, SubType, DeviceVersion, SourceIP, DestinationIP,
-          DestinationPort, DeviceAction, RuleName, URLCategory, SessionID, TotalBytes,
-          Direction, RequestURL, URLCategoryList, SequenceNumber
-| order by TestName asc
+| project TestName, Passed, Details, LogType, SubType, DeviceVersion, DestinationPort,
+          DeviceAction, RuleName, URLCategory, SessionID, RequestURL, Direction
+| order by TestName asc;
+//
+// --- B) INVARIANT: non-Palo-Alto rows are dropped; exactly the 4 PA rows survive -----
+PaloAlto_CEF_ParseRows(FakeSyslog)
+| summarize ParsedRows = count(), DistinctTypes = dcount(LogType)
+| extend
+    InputRows         = toscalar(FakeSyslog | count),
+    NonPaloAltoInput  = toscalar(FakeSyslog | where SyslogMessage !has "Palo Alto Networks" | count)
+| extend Passed = (ParsedRows == 4 and DistinctTypes == 3 and NonPaloAltoInput == 1)
+| project Test = "non-PA excluded; 4 PA rows across 3 log types survive", Passed,
+          InputRows, ParsedRows, NonPaloAltoInput, DistinctTypes;

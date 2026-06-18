@@ -1,0 +1,188 @@
+// =====================================================================================
+// enrichment.kql  --  QUERY-TIME enrichment for the PaloAlto_* tables
+// =====================================================================================
+//
+// DESIGN
+//   Enrichment lives at query time, NOT in the ingestion path. The raw PaloAlto_* fact
+//   tables are never modified. This file adds:
+//     - lookup/dimension tables for code -> description maps (editable, retroactive);
+//     - a reusable flag-bit decoder;
+//     - one *_Enriched() view per table that layers on GeoIP, severity/direction/action
+//       labels, internal/external scope, the reason description, and decoded session flags.
+//
+//   Query the enriched views exactly like the base tables, e.g.:
+//       PaloAlto_Traffic_Enriched() | where SourceCountry != "United States" | take 100
+//
+//   To change a mapping, edit the lookup table (section 1) -- it applies to all history
+//   immediately, with no re-processing of the fact tables.
+//
+// SOURCES (verify against your PAN-OS version)
+//   - Session end reasons: PAN-OS Admin Guide, "Traffic Log Fields" (session_end_reason).
+//   - Traffic Flags bits:  PAN-OS Admin Guide, "Traffic Log Fields" (Flags). Bit meanings
+//     are version-specific -- the masks below are the widely-documented set; adjust if your
+//     decode self-test (bottom of file) doesn't match what you expect.
+// =====================================================================================
+
+
+// -------------------------------------------------------------------------------------
+// 1) LOOKUP TABLES  (dimension data -- edit freely; .set-or-replace is safe to re-run)
+// -------------------------------------------------------------------------------------
+
+// Session end reason -> human description (PAN session_end_reason)
+.set-or-replace PaloAlto_Lookup_SessionEndReason <|
+    datatable(Reason:string, ReasonDescription:string)
+    [
+        "threat",                  "Threat detected; session reset, dropped, or blocked",
+        "policy-deny",             "Matched a security rule with a deny/drop action",
+        "decrypt-cert-validation", "Terminated on SSL certificate validation failure during decryption",
+        "decrypt-unsupport-param", "Unsupported TLS version, cipher, or SSH algorithm",
+        "decrypt-error",           "Terminated due to a decryption failure",
+        "aged-out",                "Session timed out (e.g. UDP/ICMP with no graceful close)",
+        "tcp-rst-from-client",     "Client sent a TCP reset",
+        "tcp-rst-from-server",     "Server sent a TCP reset",
+        "tcp-fin",                 "Connection closed with a TCP FIN",
+        "tcp-reuse",               "A new session reused the same 5-tuple",
+        "resources-unavailable",   "Dropped due to a system resource limit",
+        "unknown",                 "Unknown / no specific reason recorded",
+        "n/a",                     "Not applicable (log type is not 'end')"
+    ];
+
+// OPTIONAL scaffold: numeric category code -> name. Your URL categories already arrive as
+// names (e.g. "computer-and-internet-info"), so this is only needed if you have raw numeric
+// category/threat codes to translate. Populate and uncomment to use it in the views below.
+// .set-or-replace PaloAlto_Lookup_Category <|
+//     datatable(Code:string, CategoryName:string)
+//     [
+//         "9999", "REPLACE-WITH-YOUR-CODE-MEANING"
+//     ];
+
+
+// -------------------------------------------------------------------------------------
+// 2) FLAG DECODER  -- adds FlagsValue (long) and SessionFlags (array of names) from a
+//    hex `Flags` string column. tolong() doesn't parse "0x..", so we convert the hex
+//    digits explicitly (integer-exact), then bit-test against the documented masks.
+//    Input table T must have a `Flags` column (PaloAlto_Traffic / PaloAlto_Threat do).
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'Adds FlagsValue (long) and SessionFlags (decoded names) from a hex Flags column', folder = 'PaloAlto/Enrichment')
+  PaloAlto_WithFlagBits(T:(*)) {
+    T
+    | extend _fhex = tolower(replace_regex(tostring(Flags), @'^0[xX]', ''))
+    | extend _fhex = iff(isempty(_fhex), '0', _fhex)
+    | extend _digits = extract_all(@'[0-9a-f]', _fhex)
+    | extend _len = array_length(_digits)
+    | mv-apply with_itemindex = _i _ch = _digits to typeof(string) on (
+        summarize FlagsValue = sum(tolong(indexof('0123456789abcdef', _ch)) * binary_shift_left(tolong(1), (toint(_len) - 1 - _i) * 4))
+      )
+    | extend SessionFlags = set_difference(pack_array(
+        iif(binary_and(FlagsValue, 0x80000000) != 0, 'pcap',                ''),
+        iif(binary_and(FlagsValue, 0x40000000) != 0, 'multipath-allowed',   ''),
+        iif(binary_and(FlagsValue, 0x20000000) != 0, 'wildfire-submitted',  ''),
+        iif(binary_and(FlagsValue, 0x10000000) != 0, 'credential-detected', ''),
+        iif(binary_and(FlagsValue, 0x08000000) != 0, 'recon-excluded',      ''),
+        iif(binary_and(FlagsValue, 0x02000000) != 0, 'ipv6-session',        ''),
+        iif(binary_and(FlagsValue, 0x01000000) != 0, 'ssl-decrypted',       ''),
+        iif(binary_and(FlagsValue, 0x00800000) != 0, 'url-denied',          ''),
+        iif(binary_and(FlagsValue, 0x00400000) != 0, 'nat',                 ''),
+        iif(binary_and(FlagsValue, 0x00200000) != 0, 'captive-portal',      ''),
+        iif(binary_and(FlagsValue, 0x00100000) != 0, 'non-std-dport',       ''),
+        iif(binary_and(FlagsValue, 0x00080000) != 0, 'xff-in-source-user',  ''),
+        iif(binary_and(FlagsValue, 0x00040000) != 0, 'http-proxy-txn',      ''),
+        iif(binary_and(FlagsValue, 0x00008000) != 0, 'container-page',      ''),
+        iif(binary_and(FlagsValue, 0x00002000) != 0, 'temp-implicit-dep',   ''),
+        iif(binary_and(FlagsValue, 0x00000800) != 0, 'symmetric-return',    '')
+      ), dynamic(['']))
+    | project-away _fhex, _digits, _len
+  }
+
+
+// -------------------------------------------------------------------------------------
+// 3) ENRICHED VIEWS  (one per table -- query these like the base tables)
+// -------------------------------------------------------------------------------------
+
+.create-or-alter function
+  with (docstring = 'PaloAlto_Traffic enriched with geo, scope, severity/action labels, reason description, decoded flags', folder = 'PaloAlto/Enrichment')
+  PaloAlto_Traffic_Enriched() {
+    PaloAlto_Traffic
+    | extend _srcGeo = geo_info_from_ip_address(SourceIP), _dstGeo = geo_info_from_ip_address(DestinationIP)
+    | extend
+        SourceCountry      = tostring(_srcGeo.country),
+        SourceCity         = tostring(_srcGeo.city),
+        SourceLatitude     = toreal(_srcGeo.latitude),
+        SourceLongitude    = toreal(_srcGeo.longitude),
+        DestinationCountry = tostring(_dstGeo.country),
+        DestinationCity    = tostring(_dstGeo.city),
+        DestinationLatitude  = toreal(_dstGeo.latitude),
+        DestinationLongitude = toreal(_dstGeo.longitude),
+        SourceScope        = case(isempty(SourceIP), '',      ipv4_is_private(SourceIP), 'internal', 'external'),
+        DestinationScope   = case(isempty(DestinationIP), '', ipv4_is_private(DestinationIP), 'internal', 'external'),
+        SeverityLabel      = case(isempty(LogSeverity), '', isnull(toint(LogSeverity)), LogSeverity,
+                                  toint(LogSeverity) <= 3, 'Low', toint(LogSeverity) <= 6, 'Medium',
+                                  toint(LogSeverity) <= 8, 'High', 'Very-High'),
+        SimplifiedAction   = case(DeviceAction in ('allow','start','end'), 'Allow',
+                                  DeviceAction in ('deny','drop','drop-icmp','drop-all'), 'Deny',
+                                  DeviceAction startswith 'reset', 'Reset',
+                                  DeviceAction startswith 'block', 'Block',
+                                  DeviceAction == 'alert', 'Alert', DeviceAction)
+    | project-away _srcGeo, _dstGeo
+    | lookup kind=leftouter PaloAlto_Lookup_SessionEndReason on Reason
+    | invoke PaloAlto_WithFlagBits()
+  }
+
+.create-or-alter function
+  with (docstring = 'PaloAlto_Threat enriched with geo, scope, severity/direction/action labels, decoded flags', folder = 'PaloAlto/Enrichment')
+  PaloAlto_Threat_Enriched() {
+    PaloAlto_Threat
+    | extend _srcGeo = geo_info_from_ip_address(SourceIP), _dstGeo = geo_info_from_ip_address(DestinationIP)
+    | extend
+        SourceCountry      = tostring(_srcGeo.country),
+        SourceCity         = tostring(_srcGeo.city),
+        SourceLatitude     = toreal(_srcGeo.latitude),
+        SourceLongitude    = toreal(_srcGeo.longitude),
+        DestinationCountry = tostring(_dstGeo.country),
+        DestinationCity    = tostring(_dstGeo.city),
+        DestinationLatitude  = toreal(_dstGeo.latitude),
+        DestinationLongitude = toreal(_dstGeo.longitude),
+        SourceScope        = case(isempty(SourceIP), '',      ipv4_is_private(SourceIP), 'internal', 'external'),
+        DestinationScope   = case(isempty(DestinationIP), '', ipv4_is_private(DestinationIP), 'internal', 'external'),
+        SeverityLabel      = case(isempty(LogSeverity), '', isnull(toint(LogSeverity)), LogSeverity,
+                                  toint(LogSeverity) <= 3, 'Low', toint(LogSeverity) <= 6, 'Medium',
+                                  toint(LogSeverity) <= 8, 'High', 'Very-High'),
+        DirectionLabel     = case(CommunicationDirection == '0', 'Inbound', CommunicationDirection == '1', 'Outbound', CommunicationDirection),
+        SimplifiedAction   = case(DeviceAction in ('allow','alert'), 'Allow',
+                                  DeviceAction in ('deny','drop','drop-icmp','block','block-url','block-ip'), 'Deny',
+                                  DeviceAction startswith 'reset', 'Reset',
+                                  DeviceAction == 'sinkhole', 'Sinkhole', DeviceAction)
+    | project-away _srcGeo, _dstGeo
+    | invoke PaloAlto_WithFlagBits()
+  }
+
+.create-or-alter function
+  with (docstring = 'PaloAlto_UserID enriched with geo, scope, and severity label', folder = 'PaloAlto/Enrichment')
+  PaloAlto_UserID_Enriched() {
+    PaloAlto_UserID
+    | extend _srcGeo = geo_info_from_ip_address(SourceIP)
+    | extend
+        SourceCountry   = tostring(_srcGeo.country),
+        SourceCity      = tostring(_srcGeo.city),
+        SourceLatitude  = toreal(_srcGeo.latitude),
+        SourceLongitude = toreal(_srcGeo.longitude),
+        SourceScope     = case(isempty(SourceIP), '', ipv4_is_private(SourceIP), 'internal', 'external'),
+        SeverityLabel   = case(isempty(LogSeverity), '', isnull(toint(LogSeverity)), LogSeverity,
+                               toint(LogSeverity) <= 3, 'Low', toint(LogSeverity) <= 6, 'Medium',
+                               toint(LogSeverity) <= 8, 'High', 'Very-High')
+    | project-away _srcGeo
+  }
+
+
+// -------------------------------------------------------------------------------------
+// 4) SELF-TEST for the flag decoder  -- run this after creating the functions above.
+//    Expected:
+//      0x400000 -> ["nat"]
+//      0x100000 -> ["non-std-dport"]
+//      0x54340d -> ["nat","non-std-dport","http-proxy-txn","temp-implicit-dep","symmetric-return"]  (+ any low bits)
+//      0x0      -> []
+// -------------------------------------------------------------------------------------
+datatable(Flags:string) ["0x400000", "0x100000", "0x54340d", "0x0"]
+| invoke PaloAlto_WithFlagBits()
+| project Flags, FlagsValue, SessionFlags;
