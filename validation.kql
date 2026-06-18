@@ -1,6 +1,8 @@
 // =====================================================================================
 // Validation, monitoring & backfill for the PaloAlto_* fan-out
 // Companion to README.md -- these are ad-hoc queries/commands, not deployed objects.
+//
+// Tables: PaloAlto_Traffic (TRAFFIC), PaloAlto_Threat (THREAT), PaloAlto (everything else).
 // =====================================================================================
 
 
@@ -19,8 +21,7 @@ union
     ( union
           (PaloAlto_Traffic | where TimeGenerated > ago(lookback)),
           (PaloAlto_Threat  | where TimeGenerated > ago(lookback)),
-          (PaloAlto_Audit   | where TimeGenerated > ago(lookback)),
-          (PaloAlto_Other   | where TimeGenerated > ago(lookback))
+          (PaloAlto         | where TimeGenerated > ago(lookback))
       | summarize Rows = count()
       | extend Stage = "2_PaloAlto_tables" )
 | project Stage, Rows;
@@ -32,18 +33,17 @@ union
 union
     (PaloAlto_Traffic | extend Tbl = "Traffic"),
     (PaloAlto_Threat  | extend Tbl = "Threat"),
-    (PaloAlto_Audit   | extend Tbl = "Audit"),
-    (PaloAlto_Other   | extend Tbl = "Other")
+    (PaloAlto         | extend Tbl = "PaloAlto")
 | where TimeGenerated > ago(24h)
 | summarize Rows = count(), Latest = max(TimeGenerated), MinutesStale = datetime_diff('minute', now(), max(TimeGenerated)) by Tbl
 | order by Tbl asc;
 
 
 // -------------------------------------------------------------------------------------
-// 3) PROMOTION CANDIDATES  -- what is landing in the catch-all? High-volume LogTypes
-//    here (e.g. SYSTEM) may deserve their own dedicated table.
+// 3) CATCH-ALL BREAKDOWN  -- what is landing in PaloAlto? High-volume LogTypes here
+//    (e.g. SYSTEM, CONFIG) may deserve their own dedicated table.
 // -------------------------------------------------------------------------------------
-PaloAlto_Other
+PaloAlto
 | where TimeGenerated > ago(24h)
 | summarize Rows = count() by LogType, SubType
 | order by Rows desc;
@@ -68,8 +68,7 @@ PaloAlto_Traffic
 // -------------------------------------------------------------------------------------
 .show table PaloAlto_Traffic policy update;
 .show table PaloAlto_Threat  policy update;
-.show table PaloAlto_Audit   policy update;
-.show table PaloAlto_Other   policy update;
+.show table PaloAlto         policy update;
 
 
 // -------------------------------------------------------------------------------------
@@ -81,7 +80,5 @@ PaloAlto_Traffic
 //     PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
 // .set-or-append PaloAlto_Threat <|
 //     PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
-// .set-or-append PaloAlto_Audit <|
-//     PaloAlto_Audit_parse()   | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
-// .set-or-append PaloAlto_Other <|
-//     PaloAlto_Other_parse()   | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
+// .set-or-append PaloAlto <|
+//     PaloAlto_parse()         | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
