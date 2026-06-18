@@ -6,8 +6,9 @@
 //   Fan the raw Syslog CEF stream out into VENDOR + LOG-TYPE specific tables:
 //       PaloAlto_Traffic   <- PAN-OS TRAFFIC logs
 //       PaloAlto_Threat    <- PAN-OS THREAT logs (incl. url/virus/spyware/wildfire/file subtypes)
+//       PaloAlto_UserID    <- PAN-OS USERID logs (user-to-IP mapping)
 //       PaloAlto           <- catch-all for every other $type (CONFIG, SYSTEM, HIPMATCH,
-//                             USERID, GLOBALPROTECT, AUTHENTICATION, DECRYPTION, ...)
+//                             GLOBALPROTECT, AUTHENTICATION, DECRYPTION, ...)
 //
 // ROUTING / FILTERING  -- validated against real samples:
 //   The actual SyslogMessage arrives WITHOUT the "CEF:" token, e.g.:
@@ -96,7 +97,9 @@
         ['PanSrcDAG']:string, ['PanDstDAG']:string, ['PanHASessionOwner']:string,
         // --- additional keys seen in THREAT logs (declared so greedy boundaries hold) ---
         ['fileId']:string, ['requestClientApplication']:string, ['PanOSHTTPHeader']:string,
-        ['PanOSURLCatList']:string, ['PanDynamicUsrgrp']:string
+        ['PanOSURLCatList']:string, ['PanDynamicUsrgrp']:string,
+        // --- additional keys seen in USERID logs ---
+        ['PanOSVsysName']:string, ['PanOSActionFlags']:string, ['PanOSUGFlags']:string, ['PanOSUserBySource']:string
       )
       with (pair_delimiter = ' ', kv_delimiter = '=', greedy = true)
     | project-away _p, _ext
@@ -264,15 +267,77 @@
 
 
 // -------------------------------------------------------------------------------------
-// 4) CATCH-ALL  ->  PaloAlto   (every $type except TRAFFIC/THREAT: CONFIG, SYSTEM,
-//    HIPMATCH, USERID, GLOBALPROTECT, ...). Few fields are promoted to columns here, so
+// 4) USERID  ->  PaloAlto_UserID   (user-to-IP mapping events; subtypes login/logout/...)
+//    NOTE: USERID reuses the cs*/cn* slots with DIFFERENT labels than TRAFFIC/THREAT:
+//      cs4=Data Source Name  cs5=Data Source Type  cn1=Factor Number
+//      cn2=Virtual System ID  cn3=Timeout Threshold
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'PAN-OS USERID (user-id mapping) logs projected for the PaloAlto_UserID table', folder = 'PaloAlto')
+  PaloAlto_UserID_parse() {
+    PaloAlto_CEF_Parsed()
+    | where LogType == "USERID"
+    | project
+        TimeGenerated,
+        DeviceVendor,
+        DeviceProduct,
+        DeviceVersion,
+        LogType,
+        SubType,
+        LogSeverity,
+        Computer,
+        DeviceName          = ['dvchost'],
+        FirewallSerial      = ['deviceExternalId'],
+        SourceIP            = ['src'],
+        SourcePort          = ['spt'],
+        DestinationPort     = ['dpt'],
+        DestinationUserName = ['duser'],              // the user being mapped
+        UserBySource        = ['PanOSUserBySource'],  // domain\user as seen by the source
+        DataSourceName      = ['cs4'],                // cs4Label=Data Source Name
+        DataSourceType      = ['cs5'],                // cs5Label=Data Source Type (e.g. agent)
+        FactorNumber        = ['cn1'],                // cn1Label=Factor Number
+        VirtualSystemID     = ['cn2'],                // cn2Label=Virtual System ID
+        TimeoutThreshold    = ['cn3'],                // cn3Label=Timeout Threshold (seconds)
+        EventCount          = ['cnt'],
+        SequenceNumber      = ['externalId'],
+        EventCategory       = ['cat'],
+        VsysName            = ['PanOSVsysName'],
+        ActionFlags         = ['PanOSActionFlags'],
+        UGFlags             = ['PanOSUGFlags'],
+        EndTime             = ['end'],                // raw PAN format (mapping expiry)
+        ReceiptTime         = ['rt'],
+        UnparsedFields = bag_remove_keys(UnparsedAll, dynamic([
+            "dvchost","deviceExternalId","src","spt","dpt","duser","PanOSUserBySource",
+            "cs4","cs5","cn1","cn2","cn3","cnt","externalId","cat",
+            "PanOSVsysName","PanOSActionFlags","PanOSUGFlags","end","rt",
+            "cs4Label","cs5Label","cn1Label","cn2Label","cn3Label"
+        ]))
+  }
+
+.create table PaloAlto_UserID (
+    TimeGenerated:datetime, DeviceVendor:string, DeviceProduct:string, DeviceVersion:string,
+    LogType:string, SubType:string, LogSeverity:string, Computer:string, DeviceName:string,
+    FirewallSerial:string, SourceIP:string, SourcePort:int, DestinationPort:int,
+    DestinationUserName:string, UserBySource:string, DataSourceName:string, DataSourceType:string,
+    FactorNumber:int, VirtualSystemID:int, TimeoutThreshold:int, EventCount:int, SequenceNumber:string,
+    EventCategory:string, VsysName:string, ActionFlags:string, UGFlags:string, EndTime:string,
+    ReceiptTime:string, UnparsedFields:dynamic
+)
+
+.alter table PaloAlto_UserID policy update
+'[{"IsEnabled":true,"Source":"Syslog","Query":"PaloAlto_UserID_parse()","IsTransactional":false,"PropagateIngestionProperties":false}]'
+
+
+// -------------------------------------------------------------------------------------
+// 5) CATCH-ALL  ->  PaloAlto   (every $type except TRAFFIC/THREAT/USERID: CONFIG, SYSTEM,
+//    HIPMATCH, GLOBALPROTECT, ...). Few fields are promoted to columns here, so
 //    UnparsedFields carries most of the record -- exactly what we want for the misc types.
 // -------------------------------------------------------------------------------------
 .create-or-alter function
-  with (docstring = 'PAN-OS logs of any type other than TRAFFIC/THREAT (CONFIG, SYSTEM, HIPMATCH, USERID, GLOBALPROTECT, ...)', folder = 'PaloAlto')
+  with (docstring = 'PAN-OS logs of any type other than TRAFFIC/THREAT/USERID (CONFIG, SYSTEM, HIPMATCH, GLOBALPROTECT, ...)', folder = 'PaloAlto')
   PaloAlto_parse() {
     PaloAlto_CEF_Parsed()
-    | where LogType !in ("TRAFFIC", "THREAT")
+    | where LogType !in ("TRAFFIC", "THREAT", "USERID")
     | project
         TimeGenerated,
         DeviceVendor,

@@ -15,8 +15,8 @@ Files in this repo:
 Run this **first**. It proves the parsing is correct before anything touches your cluster.
 
 1. Open `PaloAlto_tests.kql`, paste the whole file into an ADX/Kusto query window, run it.
-2. **Expected result:** 3 rows, every `Passed == true`, every `Details` empty.
-   - `TRAFFIC_drop_13.5`, `TRAFFIC_allow_10.1`, `THREAT_url_10.1`.
+2. **Expected result:** 4 rows, every `Passed == true`, every `Details` empty.
+   - `TRAFFIC_drop_13.5`, `TRAFFIC_allow_10.1`, `THREAT_url_10.1`, `USERID_login_10.1`.
 3. If any row shows `Passed == false`, the `Details` column names the field(s) that didn't match the expected value.
 
 This requires no tables and deploys nothing — safe to run on any database.

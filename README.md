@@ -10,7 +10,8 @@ Data Collection Rule keeps landing raw syslog in `Syslog`; ADX does the parsing 
 |-------|----------|--------|
 | `PaloAlto_Traffic` | PAN-OS `TRAFFIC` logs | ✅ validated against real samples (PAN-OS 13.5 + 10.1) |
 | `PaloAlto_Threat` | PAN-OS `THREAT` logs (`url`/`virus`/`spyware`/`wildfire`/`file`/…) | ✅ validated against a real `url` sample |
-| `PaloAlto` | every other `$type` — `CONFIG`, `SYSTEM`, `HIPMATCH`, `USERID`, `GLOBALPROTECT`, … | ✅ no-drop catch-all |
+| `PaloAlto_UserID` | PAN-OS `USERID` logs (user-to-IP mapping) | ✅ validated against a real `login` sample |
+| `PaloAlto` | every other `$type` — `CONFIG`, `SYSTEM`, `HIPMATCH`, `GLOBALPROTECT`, … | ✅ no-drop catch-all |
 
 Routing is exhaustive and mutually exclusive, so every Palo Alto record lands in exactly
 one table and nothing is silently dropped.
@@ -20,7 +21,7 @@ one table and nothing is silently dropped.
 | File | What it is |
 |------|------------|
 | [`PaloAlto_CEF.kql`](PaloAlto_CEF.kql) | **The deployable KQL** — base parser, per-table projection functions, `.create table`, and update policies. |
-| [`PaloAlto_tests.kql`](PaloAlto_tests.kql) | Self-contained parser test. Runs the parse against three real sample logs and asserts the output. Touches no tables — safe to run anywhere. |
+| [`PaloAlto_tests.kql`](PaloAlto_tests.kql) | Self-contained parser test. Runs the parse against four representative sample logs and asserts the output. Touches no tables — safe to run anywhere. |
 | [`validation.kql`](validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
 | [`TESTING.md`](TESTING.md) | Deploy → test → verify → backfill runbook. |
 | [`SIDEQUEST.kql`](SIDEQUEST.kql) | One-off historical backfill: maps a CommonSecurityLog-shaped Search Job table (Palo Alto THREAT only) into `PaloAlto_Threat`, tagged and reversible. |
@@ -89,7 +90,7 @@ git clone https://github.com/11bztaylor/KQL.git
 cd KQL
 ```
 
-1. **Test the parser** (no deployment, zero risk): run [`PaloAlto_tests.kql`](PaloAlto_tests.kql) — expect 3 rows, all `Passed = true`.
+1. **Test the parser** (no deployment, zero risk): run [`PaloAlto_tests.kql`](PaloAlto_tests.kql) — expect 4 rows, all `Passed = true`.
 2. **Deploy**: run [`PaloAlto_CEF.kql`](PaloAlto_CEF.kql) top-to-bottom on your ADX database.
 3. **Verify**: once live data flows, run the reconciliation query in [`validation.kql`](validation.kql).
 
