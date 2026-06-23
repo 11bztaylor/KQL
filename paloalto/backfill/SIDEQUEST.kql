@@ -3,56 +3,62 @@
 // =====================================================================================
 //
 // SCENARIO
-//   A Sentinel *Search Job* over CommonSecurityLog (archived, ~1 year back) produced a
-//   CEF results table, already landed in ADX, in the standard CommonSecurityLog schema. We
-//   want those historical rows in the same PaloAlto_* tables the live update policies write to.
+//   A Sentinel *Search Job* over CommonSecurityLog (archived, ~1 year back) landed CEF results
+//   into the CommonSecurityLog table in ADX, in the standard CommonSecurityLog schema. We want
+//   those historical rows in the same PaloAlto_* tables the live update policies write to.
 //   Section 1 maps THREAT rows; section 1b maps TRAFFIC rows. (USERID is intentionally
 //   omitted -- user-id mapping logs are rarely forwarded via CEF; confirm with the Activity
 //   breakdown below before assuming you need it.)
 //
-//   This is NOT the raw-Syslog path: CommonSecurityLog is already parsed into columns, so
-//   we map column-to-column (not split a CEF header). The PAN-specific extras that
-//   CommonSecurityLog didn't map to a column live in its AdditionalExtensions string, which
-//   we preserve in UnparsedFields (and pull RuleUUID / URLCategoryList out of).
+//   This is NOT the raw-Syslog path: CommonSecurityLog is already parsed into columns, so we
+//   map column-to-column (not split a CEF header). The PAN-specific extras that
+//   CommonSecurityLog didn't map to a column live in its AdditionalExtensions string, which we
+//   preserve in UnparsedFields (and pull RuleUUID / URLCategoryList out of).
+//
+//   The mappers READ CommonSecurityLog DIRECTLY -- a plain function reads its source. (You can't
+//   reference columns like DeviceVendor through a wildcard `(*)` tabular parameter, so there is
+//   no `T`.) If your search-job results live in a DIFFERENTLY-NAMED table, change the single
+//   `CommonSecurityLog` reference inside each function to that table name.
 //
 //   PAN's log TYPE ($type) lands in CommonSecurityLog's `Activity` column, its $subtype in
 //   `DeviceEventClassID`. Confirm what you actually have before backfilling:
 //       CommonSecurityLog | where DeviceVendor has "Palo Alto" | summarize count() by Activity
 //
 // SAFETY
-//   - The backfill is written with an extent TAG ("backfill:csl-searchjob") so it is
-//     identifiable and fully reversible (drop by tag) -- see section 4/5.
-//   - Re-running the append DOUBLES the data. Drop the tagged extents before re-running.
+//   - Each backfill is written with an extent TAG ("backfill:csl-searchjob") so it is
+//     identifiable and fully reversible (drop by tag) -- see sections 4/5.
+//   - Re-running an append DOUBLES the data. Drop the tagged extents before re-running.
 //   - Only backfill the window BEFORE your live ingestion started, or you'll duplicate
 //     rows that the update policy already wrote.
 //
 // HOW TO USE
-//   1. Pick the mapper for the log type you're backfilling (THREAT = section 1,
-//      TRAFFIC = section 1b) and set the two placeholders in section 2/3.
-//   2. Run section 2 (PREVIEW - no write) and eyeball ~100 rows. If a column name doesn't
-//      exist in your CSL schema version, the preview fails here -- adjust and retry.
-//   3. Run section 3 (single-shot tagged backfill) -- or section 3b (batched) for large ranges.
+//   1. Create the mapper(s) once (section 1 / 1b). They take NO arguments -- run the
+//      `.create-or-alter function` on its own (a command and a query can't run together).
+//   2. Preview (section 2):  PaloAlto_Threat_FromCSL() | where TimeGenerated between (..) | take 100
+//   3. Backfill: section 3 (single-shot) or section 3b (batched, for large ranges).
 //   4. Reconcile (section 4). If wrong, roll back (section 5) and retry.
+//   NOTE: scope every step with `| where TimeGenerated between (..)` -- do NOT use `invoke`.
 // =====================================================================================
 
 
 // -------------------------------------------------------------------------------------
-// 1) MAPPER  -- CommonSecurityLog-shaped PA THREAT rows  ->  PaloAlto_Threat schema.
-//    Column order matches PaloAlto_Threat exactly (required by .set-or-append).
-//    column_ifexists() guards columns that only exist in newer CommonSecurityLog schemas.
+// 1) MAPPER  -- CommonSecurityLog PA THREAT rows  ->  PaloAlto_Threat schema.
+//    Reads CommonSecurityLog directly; column order matches PaloAlto_Threat exactly
+//    (required by .set-or-append). column_ifexists() guards columns that vary across
+//    CommonSecurityLog schema versions.
 // -------------------------------------------------------------------------------------
 .create-or-alter function
-  with (docstring = 'SIDEQUEST: map CommonSecurityLog-shaped Palo Alto THREAT rows to the PaloAlto_Threat schema for historical backfill', folder = 'PaloAlto/SIDEQUEST')
-  PaloAlto_Threat_FromCSL(T:(*)) {
-    T
+  with (docstring = 'SIDEQUEST: map CommonSecurityLog Palo Alto THREAT rows to the PaloAlto_Threat schema for historical backfill', folder = 'PaloAlto/SIDEQUEST')
+  PaloAlto_Threat_FromCSL() {
+    CommonSecurityLog
     | where DeviceVendor has "Palo Alto"
-    | where Activity == "THREAT"             // PAN $type lands in CSL Activity (safe even on a mixed source)
+    | where Activity == "THREAT"             // PAN $type lands in CSL Activity
     | project
         TimeGenerated,
         DeviceVendor             = tostring(DeviceVendor),
         DeviceProduct            = tostring(DeviceProduct),
         DeviceVersion            = tostring(DeviceVersion),
-        LogType                  = "THREAT",                       // source is curated THREAT-only
+        LogType                  = "THREAT",
         SubType                  = tostring(DeviceEventClassID),   // $subtype: url/virus/spyware/...
         LogSeverity              = tostring(LogSeverity),
         Computer                 = tostring(Computer),
@@ -98,20 +104,19 @@
 
 
 // -------------------------------------------------------------------------------------
-// 1b) MAPPER  -- CommonSecurityLog-shaped PA TRAFFIC rows  ->  PaloAlto_Traffic schema.
-//    Column order matches PaloAlto_Traffic exactly (required by .set-or-append).
-//    cn1/cn2/cn3 use coalesce(FieldDeviceCustomNumberN, DeviceCustomNumberN) for schema drift;
-//    column_ifexists() guards columns that vary across CommonSecurityLog versions.
+// 1b) MAPPER  -- CommonSecurityLog PA TRAFFIC rows  ->  PaloAlto_Traffic schema.
+//    Reads CommonSecurityLog directly; column order matches PaloAlto_Traffic exactly.
+//    cn1/cn2/cn3 use coalesce(FieldDeviceCustomNumberN, DeviceCustomNumberN) for schema drift.
 //    NOTE: StartTime is a string in PaloAlto_Traffic but a datetime in CommonSecurityLog, so
 //    backfilled rows carry an ISO timestamp string rather than PAN's raw "Mon dd yyyy ..."
 //    format -- a documented, harmless difference for historical data.
 // -------------------------------------------------------------------------------------
 .create-or-alter function
-  with (docstring = 'SIDEQUEST: map CommonSecurityLog-shaped Palo Alto TRAFFIC rows to the PaloAlto_Traffic schema for historical backfill', folder = 'PaloAlto/SIDEQUEST')
-  PaloAlto_Traffic_FromCSL(T:(*)) {
-    T
+  with (docstring = 'SIDEQUEST: map CommonSecurityLog Palo Alto TRAFFIC rows to the PaloAlto_Traffic schema for historical backfill', folder = 'PaloAlto/SIDEQUEST')
+  PaloAlto_Traffic_FromCSL() {
+    CommonSecurityLog
     | where DeviceVendor has "Palo Alto"
-    | where Activity == "TRAFFIC"                  // PAN $type lands in CSL Activity
+    | where Activity == "TRAFFIC"            // PAN $type lands in CSL Activity
     | project
         TimeGenerated,
         DeviceVendor                 = tostring(DeviceVendor),
@@ -162,29 +167,24 @@
 
 
 // -------------------------------------------------------------------------------------
-// 2) PREVIEW (no write)  -- EDIT the two placeholders, then run and sanity-check ~100 rows.
-//        <SourceSearchJobTable>  = your CommonSecurityLog-shaped search-job table
-//        date range              = the window you are backfilling
-//    Sections 2-5 are written for THREAT. For TRAFFIC, swap PaloAlto_Threat_FromCSL ->
-//    PaloAlto_Traffic_FromCSL and the target table PaloAlto_Threat -> PaloAlto_Traffic.
+// 2) PREVIEW (no write)  -- set the date window, run, sanity-check ~100 rows. If a column name
+//    doesn't exist in your CommonSecurityLog schema, the preview fails here -- adjust and retry.
+//    For TRAFFIC, swap PaloAlto_Threat_FromCSL -> PaloAlto_Traffic_FromCSL and the target table
+//    PaloAlto_Threat -> PaloAlto_Traffic throughout sections 2-5.
 // -------------------------------------------------------------------------------------
-PaloAlto_Threat_FromCSL(
-    <SourceSearchJobTable>
-    | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
-)
+PaloAlto_Threat_FromCSL()
+| where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
 | take 100;
 
 
 // -------------------------------------------------------------------------------------
-// 3) BACKFILL (writes)  -- single-shot. Tagged so it is identifiable and reversible. Uses the
-//    same placeholders as the preview. `async` returns an operation id (track via .show operations).
+// 3) BACKFILL (writes)  -- single-shot. Tagged so it is identifiable and reversible.
+//    `async` returns an operation id (track via .show operations).
 //    For a LARGE range (more than a few GB / tens of millions of rows) use section 3b instead.
 // -------------------------------------------------------------------------------------
 .set-or-append async PaloAlto_Threat with (tags='["backfill:csl-searchjob"]') <|
-    PaloAlto_Threat_FromCSL(
-        <SourceSearchJobTable>
-        | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
-    )
+    PaloAlto_Threat_FromCSL()
+    | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
 
 
 // -------------------------------------------------------------------------------------
@@ -197,7 +197,7 @@ PaloAlto_Threat_FromCSL(
 //     STEP 1 -- size the full range first. More than a few GB / tens of millions of rows?
 //     Don't run section 3; batch with STEP 2.
 // -------------------------------------------------------------------------------------
-<SourceSearchJobTable>
+CommonSecurityLog
 | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
 | where DeviceVendor has "Palo Alto" and Activity == "THREAT"
 | summarize Rows = count(), GB = round(sum(estimate_data_size(*)) / 1024.0 / 1024 / 1024, 2);
@@ -206,13 +206,11 @@ PaloAlto_Threat_FromCSL(
 //     the range: 2025-06-01..2025-07-01, then ..2025-08-01, and so on. The tag is shared, so a
 //     single rollback (section 5) still removes every batch. Track each with `.show operations <id>`.
 .set-or-append async PaloAlto_Threat with (tags='["backfill:csl-searchjob"]') <|
-    PaloAlto_Threat_FromCSL(
-        <SourceSearchJobTable>
-        | where TimeGenerated between (datetime(2025-06-01) .. datetime(2025-07-01))
-    )
+    PaloAlto_Threat_FromCSL()
+    | where TimeGenerated between (datetime(2025-06-01) .. datetime(2025-07-01))
 
 //     STEP 3 -- reconcile THIS window before moving to the next (the two counts should match):
-<SourceSearchJobTable>
+CommonSecurityLog
 | where TimeGenerated between (datetime(2025-06-01) .. datetime(2025-07-01))
 | where DeviceVendor has "Palo Alto" and Activity == "THREAT"
 | summarize SourceRows = count();
@@ -231,7 +229,7 @@ PaloAlto_Threat
 | where extent_tags() has 'backfill:csl-searchjob'
 | summarize Appended = count();
 
-<SourceSearchJobTable>
+CommonSecurityLog
 | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
 | where DeviceVendor has "Palo Alto" and Activity == "THREAT"
 | summarize SourceRows = count();
