@@ -24,7 +24,8 @@ one table and nothing is silently dropped.
 | [`enrichment.kql`](paloalto/enrichment/enrichment.kql) | Query-time enrichment: GeoIP, severity/direction/action labels, internal/external scope, session-end-reason descriptions, decoded session flags. Raw tables stay untouched. |
 | [`validation.kql`](paloalto/ops/validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
 | [`TESTING.md`](docs/TESTING.md) | Deploy → verify → backfill runbook. |
-| [`SIDEQUEST.kql`](paloalto/backfill/SIDEQUEST.kql) | One-off historical backfill: maps CommonSecurityLog-shaped Search Job rows (Palo Alto THREAT → `PaloAlto_Threat`, TRAFFIC → `PaloAlto_Traffic`) into the live tables, tagged and reversible. |
+| [`SIDEQUEST.kql`](paloalto/backfill/SIDEQUEST.kql) | CommonSecurityLog → `PaloAlto_*` mappers (THREAT/TRAFFIC) + a tagged, reversible **physical** backfill. Reused as transform-on-read by the union views. |
+| [`historical_union.kql`](paloalto/views/historical_union.kql) | **Query-time union** of the live `PaloAlto_*` tables with CommonSecurityLog history (`PaloAlto_Threat_All()` / `PaloAlto_Traffic_All()`) — zero-copy alternative to physically backfilling TBs. |
 | [`shared/shared.kql`](shared/shared.kql) | Vendor-agnostic helpers: `Shared_HexToLong`, `Shared_SeverityLabel`, `Shared_Direction`, `Shared_IpScope`. Deploy **before** enrichment. |
 
 ## Repository layout
@@ -39,8 +40,9 @@ docs/TESTING.md
 paloalto/
   deploy/PaloAlto_CEF.kql        functions + tables + update policies (one ordered file)
   enrichment/enrichment.kql      query-time enrichment views
+  views/historical_union.kql     live ∪ CommonSecurityLog history (zero-copy, transform-on-read)
   ops/validation.kql             monitoring / reconciliation / drift / backfill
-  backfill/SIDEQUEST.kql         one-off historical THREAT backfill
+  backfill/SIDEQUEST.kql         CSL→PaloAlto_* mappers + physical backfill
 shared/shared.kql                vendor-agnostic helpers (hex, severity, direction, ip-scope)
 ```
 
