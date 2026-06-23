@@ -31,7 +31,7 @@
 //      TRAFFIC = section 1b) and set the two placeholders in section 2/3.
 //   2. Run section 2 (PREVIEW - no write) and eyeball ~100 rows. If a column name doesn't
 //      exist in your CSL schema version, the preview fails here -- adjust and retry.
-//   3. Run section 3 (the tagged backfill).
+//   3. Run section 3 (single-shot tagged backfill) -- or section 3b (batched) for large ranges.
 //   4. Reconcile (section 4). If wrong, roll back (section 5) and retry.
 // =====================================================================================
 
@@ -45,7 +45,8 @@
   with (docstring = 'SIDEQUEST: map CommonSecurityLog-shaped Palo Alto THREAT rows to the PaloAlto_Threat schema for historical backfill', folder = 'PaloAlto/SIDEQUEST')
   PaloAlto_Threat_FromCSL(T:(*)) {
     T
-    | where DeviceVendor has "Palo Alto"     // source is threat-only, but stay vendor-safe
+    | where DeviceVendor has "Palo Alto"
+    | where Activity == "THREAT"             // PAN $type lands in CSL Activity (safe even on a mixed source)
     | project
         TimeGenerated,
         DeviceVendor             = tostring(DeviceVendor),
@@ -175,8 +176,9 @@ PaloAlto_Threat_FromCSL(
 
 
 // -------------------------------------------------------------------------------------
-// 3) BACKFILL (writes)  -- tagged so it is identifiable and reversible. Uses the same
-//    placeholders as the preview. `async` returns an operation id (track via .show operations).
+// 3) BACKFILL (writes)  -- single-shot. Tagged so it is identifiable and reversible. Uses the
+//    same placeholders as the preview. `async` returns an operation id (track via .show operations).
+//    For a LARGE range (more than a few GB / tens of millions of rows) use section 3b instead.
 // -------------------------------------------------------------------------------------
 .set-or-append async PaloAlto_Threat with (tags='["backfill:csl-searchjob"]') <|
     PaloAlto_Threat_FromCSL(
@@ -186,7 +188,44 @@ PaloAlto_Threat_FromCSL(
 
 
 // -------------------------------------------------------------------------------------
+// 3b) BATCHED BACKFILL  -- use this INSTEAD of section 3 for large ranges (e.g. a year).
+//     .set-or-append is ingest-from-query: one giant run can exceed query/memory limits and
+//     fail. It's atomic, so a failure commits nothing -- but you waste the run and strain the
+//     cluster. Batching by time window keeps each run small, restartable, and tag-droppable.
+//     (For TRAFFIC, swap the function/table/Activity exactly as in the section-2 note.)
+//
+//     STEP 1 -- size the full range first. More than a few GB / tens of millions of rows?
+//     Don't run section 3; batch with STEP 2.
+// -------------------------------------------------------------------------------------
+<SourceSearchJobTable>
+| where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
+| where DeviceVendor has "Palo Alto" and Activity == "THREAT"
+| summarize Rows = count(), GB = round(sum(estimate_data_size(*)) / 1024.0 / 1024 / 1024, 2);
+
+//     STEP 2 -- backfill ONE window at a time (one month shown). Re-run for each month across
+//     the range: 2025-06-01..2025-07-01, then ..2025-08-01, and so on. The tag is shared, so a
+//     single rollback (section 5) still removes every batch. Track each with `.show operations <id>`.
+.set-or-append async PaloAlto_Threat with (tags='["backfill:csl-searchjob"]') <|
+    PaloAlto_Threat_FromCSL(
+        <SourceSearchJobTable>
+        | where TimeGenerated between (datetime(2025-06-01) .. datetime(2025-07-01))
+    )
+
+//     STEP 3 -- reconcile THIS window before moving to the next (the two counts should match):
+<SourceSearchJobTable>
+| where TimeGenerated between (datetime(2025-06-01) .. datetime(2025-07-01))
+| where DeviceVendor has "Palo Alto" and Activity == "THREAT"
+| summarize SourceRows = count();
+//
+PaloAlto_Threat
+| where TimeGenerated between (datetime(2025-06-01) .. datetime(2025-07-01))
+| where extent_tags() has 'backfill:csl-searchjob'
+| summarize Appended = count();
+
+
+// -------------------------------------------------------------------------------------
 // 4) RECONCILE  -- the two counts should match (source PA-threat rows vs rows we appended).
+//    (Use this for the single-shot section-3 run; section 3b reconciles per window itself.)
 // -------------------------------------------------------------------------------------
 PaloAlto_Threat
 | where extent_tags() has 'backfill:csl-searchjob'
@@ -194,7 +233,7 @@ PaloAlto_Threat
 
 <SourceSearchJobTable>
 | where TimeGenerated between (datetime(2025-06-19) .. datetime(2026-06-19))
-| where DeviceVendor has "Palo Alto"
+| where DeviceVendor has "Palo Alto" and Activity == "THREAT"
 | summarize SourceRows = count();
 
 
