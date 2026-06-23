@@ -24,6 +24,21 @@
 //   `DeviceEventClassID`. Confirm what you actually have before backfilling:
 //       CommonSecurityLog | where DeviceVendor has "Palo Alto" | summarize count() by Activity
 //
+// PHYSICAL COPY vs QUERY-TIME UNION
+//   At TB scale (hundreds of GB/month), physically backfilling all of this copies terabytes and
+//   pays for the storage. PREFERRED for large CommonSecurityLog history: the query-time UNION
+//   views in ../views/historical_union.kql -- they reuse the section-1 mappers as a
+//   transform-on-read (zero ingest), so deploy these mapper FUNCTIONS but skip the physical
+//   backfill below. Use the physical backfill (sections 2-5) only when you specifically want the
+//   history MATERIALIZED in PaloAlto_* (e.g. you intend to PURGE PA from CommonSecurityLog --
+//   the union can't be used once the source is gone).
+//
+//   NATIVE LEVERS if you do run the physical backfill on a large window:
+//     distributed=true  -> parallelize the transform across nodes (output > ~1 GB)
+//     creationTime=...  -> age extents into cold storage by the WINDOW date (not "now")
+//     noTruncation=true -> lift the query-result size cap
+//   Each .set-or-append has a 1-HOUR operation timeout; size windows to finish under it.
+//
 // SAFETY
 //   - Each backfill is written with an extent TAG ("backfill:csl-searchjob") so it is
 //     identifiable and fully reversible (drop by tag) -- see sections 4/5.
@@ -205,7 +220,8 @@ CommonSecurityLog
 //     STEP 2 -- backfill ONE window at a time (one month shown). Re-run for each month across
 //     the range: 2025-06-01..2025-07-01, then ..2025-08-01, and so on. The tag is shared, so a
 //     single rollback (section 5) still removes every batch. Track each with `.show operations <id>`.
-.set-or-append async PaloAlto_Threat with (tags='["backfill:csl-searchjob"]') <|
+.set-or-append async PaloAlto_Threat
+    with (distributed=true, noTruncation=true, creationTime='2025-06-01', tags='["backfill:csl-searchjob"]') <|
     PaloAlto_Threat_FromCSL()
     | where TimeGenerated between (datetime(2025-06-01) .. datetime(2025-07-01))
 

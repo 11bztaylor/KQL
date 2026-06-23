@@ -1,0 +1,61 @@
+// =====================================================================================
+// historical_union.kql  --  query-time union of live PaloAlto_* with CommonSecurityLog history
+// =====================================================================================
+//
+// WHY
+//   The historical Palo Alto data in CommonSecurityLog is very large (hundreds of GB/month --
+//   terabytes for a year). Physically backfilling it into PaloAlto_* would copy all of that and
+//   pay for the storage. Instead, these views UNION the live tables with the CommonSecurityLog
+//   history transformed ON READ -- zero ingest, zero extra storage. Query PaloAlto_Threat_All()
+//   / PaloAlto_Traffic_All() to see live + history together.
+//
+// DEPENDENCY
+//   Reuses the mapper functions from backfill/SIDEQUEST.kql (PaloAlto_Threat_FromCSL,
+//   PaloAlto_Traffic_FromCSL) as a transform-on-read. Deploy those FUNCTIONS first; you do NOT
+//   need to run the physical backfill -- the union calls the same mappers per query.
+//
+// BOUNDARY (no double-counting)
+//   The CommonSecurityLog side is bounded to TimeGenerated < the earliest live row, so it only
+//   contributes the pre-cutover history; the live table owns everything from the cutover on.
+//   This is self-adjusting: as you backfill pre-policy Syslog into PaloAlto_* (validation.kql
+//   section 6), the live min moves earlier and the CSL side automatically contributes less.
+//   If the live table is empty, the whole CSL history is included.
+//
+// PERFORMANCE / TRADE-OFFS
+//   - A `| where TimeGenerated > ago(...)` on the view pushes down, so recent queries barely
+//     touch CommonSecurityLog. Only deep-historical queries pay the transform-on-read cost.
+//   - Queries that reach far back are slower than hitting a materialized table (wide CSL rows
+//     are reshaped every time).
+//   - CommonSecurityLog MUST be retained -- do NOT purge PA from CSL while you rely on these
+//     views. (That's the cost of not copying the data.)
+// =====================================================================================
+
+
+.create-or-alter function
+  with (docstring = 'Live PaloAlto_Threat unioned with pre-cutover CommonSecurityLog history (transform-on-read)', folder = 'PaloAlto/Views')
+  PaloAlto_Threat_All() {
+    let _cutover = coalesce(toscalar(PaloAlto_Threat | summarize min(TimeGenerated)), datetime(9999-12-31));
+    union
+        PaloAlto_Threat,
+        (PaloAlto_Threat_FromCSL() | where TimeGenerated < _cutover)
+  }
+
+
+.create-or-alter function
+  with (docstring = 'Live PaloAlto_Traffic unioned with pre-cutover CommonSecurityLog history (transform-on-read)', folder = 'PaloAlto/Views')
+  PaloAlto_Traffic_All() {
+    let _cutover = coalesce(toscalar(PaloAlto_Traffic | summarize min(TimeGenerated)), datetime(9999-12-31));
+    union
+        PaloAlto_Traffic,
+        (PaloAlto_Traffic_FromCSL() | where TimeGenerated < _cutover)
+  }
+
+
+// -------------------------------------------------------------------------------------
+// SANITY CHECK  -- the union should be continuous across the cutover with no gap/overlap.
+//    Compare daily counts around your cutover date; live and history should hand off cleanly.
+// -------------------------------------------------------------------------------------
+// PaloAlto_Threat_All()
+// | where TimeGenerated between (datetime(2026-01-01) .. datetime(2026-07-01))
+// | summarize Rows = count() by bin(TimeGenerated, 1d)
+// | order by TimeGenerated asc

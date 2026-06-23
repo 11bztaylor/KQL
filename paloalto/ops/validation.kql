@@ -91,16 +91,18 @@ PaloAlto_Traffic
 union PaloAlto_Traffic, PaloAlto_Threat, PaloAlto_UserID, PaloAlto
 | summarize LiveRoutingStarted = min(ingestion_time()), EarliestLiveEvent = min(TimeGenerated);
 
-// 6b) BACKFILL (writes) -- tagged + scoped to the pre-cutover window. Set START and CUTOVER.
-//     For a large gap, batch by month (one window per run) and add `async`. Run per table.
-// .set-or-append PaloAlto_Traffic with (tags='["backfill:syslog-prepolicy"]') <|
-//     PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
-// .set-or-append PaloAlto_Threat  with (tags='["backfill:syslog-prepolicy"]') <|
-//     PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
-// .set-or-append PaloAlto_UserID  with (tags='["backfill:syslog-prepolicy"]') <|
-//     PaloAlto_UserID_parse()  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
-// .set-or-append PaloAlto         with (tags='["backfill:syslog-prepolicy"]') <|
-//     PaloAlto_parse()         | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+// 6b) BACKFILL (writes) -- tagged + scoped to the pre-cutover window. Set the window + creationTime.
+//     NATIVE LEVERS for volume:
+//       distributed=true  -> parallelize the transform across nodes (use when output > ~1 GB)
+//       creationTime=...  -> stamp extents with the WINDOW date so backfill ages into cold storage
+//                            correctly instead of all landing in hot cache (set per window)
+//       noTruncation=true -> lift the query-result size cap
+//     Each .set-or-append has a 1-HOUR operation timeout -- size each window to finish under it
+//     (calibrate one window, then scale). Batch by month; run one per table, per window.
+// .set-or-append async PaloAlto_Threat
+//     with (distributed=true, noTruncation=true, creationTime='2026-04-01', tags='["backfill:syslog-prepolicy"]') <|
+//     PaloAlto_Threat_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+//   -- repeat for PaloAlto_Traffic / PaloAlto_UserID / PaloAlto, each with its own window + matching creationTime.
 
 // 6c) RECONCILE (per table, per window) -- the two counts should match.
 // PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01)) | count;   // expected from Syslog
