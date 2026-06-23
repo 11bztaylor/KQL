@@ -75,18 +75,40 @@ PaloAlto_Traffic
 
 
 // -------------------------------------------------------------------------------------
-// 6) ONE-TIME BACKFILL  -- update policies are forward-only. To populate the tables from
-//    data ALREADY in Syslog, run these once (scope the window to avoid reprocessing
-//    everything). Safe to re-run only if you first clear overlapping extents.
+// 6) ONE-TIME SYSLOG BACKFILL  -- update policies are FORWARD-ONLY: they only routed data
+//    ingested AFTER you attached them. PA data already in Syslog from BEFORE that cutover is
+//    missing from the PaloAlto_* tables. This backfills that pre-cutover gap by re-running the
+//    SAME live parsers over the historical window, tagged so it is fully reversible.
+//
+//    DO NOT backfill past the cutover -- those rows were already written by the policy, so you
+//    would DUPLICATE them. Backfill window = [earliest Syslog PA] .. [cutover].
+//
+//    (RAW-Syslog path. Historical CommonSecurityLog data uses the *_FromCSL mappers in
+//     backfill/SIDEQUEST.kql instead. Run each statement below on its own.)
 // -------------------------------------------------------------------------------------
-// .set-or-append PaloAlto_Traffic <|
-//     PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
-// .set-or-append PaloAlto_Threat <|
-//     PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
-// .set-or-append PaloAlto_UserID <|
-//     PaloAlto_UserID_parse()  | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
-// .set-or-append PaloAlto <|
-//     PaloAlto_parse()         | where TimeGenerated between (datetime(2026-06-01) .. datetime(2026-06-18));
+
+// 6a) FIND THE CUTOVER -- when the live policy first wrote. Bound the backfill at/just-before this.
+union PaloAlto_Traffic, PaloAlto_Threat, PaloAlto_UserID, PaloAlto
+| summarize LiveRoutingStarted = min(ingestion_time()), EarliestLiveEvent = min(TimeGenerated);
+
+// 6b) BACKFILL (writes) -- tagged + scoped to the pre-cutover window. Set START and CUTOVER.
+//     For a large gap, batch by month (one window per run) and add `async`. Run per table.
+// .set-or-append PaloAlto_Traffic with (tags='["backfill:syslog-prepolicy"]') <|
+//     PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+// .set-or-append PaloAlto_Threat  with (tags='["backfill:syslog-prepolicy"]') <|
+//     PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+// .set-or-append PaloAlto_UserID  with (tags='["backfill:syslog-prepolicy"]') <|
+//     PaloAlto_UserID_parse()  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+// .set-or-append PaloAlto         with (tags='["backfill:syslog-prepolicy"]') <|
+//     PaloAlto_parse()         | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+
+// 6c) RECONCILE (per table, per window) -- the two counts should match.
+// PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01)) | count;   // expected from Syslog
+// PaloAlto_Traffic | where extent_tags() has 'backfill:syslog-prepolicy'
+//                  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01)) | count;          // actually appended
+
+// 6d) ROLLBACK (per table) -- drops ONLY the tagged backfill extents; live data is untouched.
+// .drop extents <| .show table PaloAlto_Traffic extents where tags has 'backfill:syslog-prepolicy'
 
 
 // -------------------------------------------------------------------------------------
