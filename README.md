@@ -22,8 +22,9 @@ one table and nothing is silently dropped.
 |------|------------|
 | [`PaloAlto_CEF.kql`](paloalto/deploy/PaloAlto_CEF.kql) | **The deployable KQL** — base parser, per-table projection functions, `.create table`, and update policies. |
 | [`enrichment.kql`](paloalto/enrichment/enrichment.kql) | Query-time enrichment: GeoIP, severity/direction/action labels, internal/external scope, session-end-reason descriptions, decoded session flags. Raw tables stay untouched. |
-| [`validation.kql`](paloalto/ops/validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and backfill queries. |
+| [`validation.kql`](paloalto/ops/validation.kql) | Post-deployment reconciliation, freshness, catch-all breakdown, parse-health, and label-drift queries. |
 | [`TESTING.md`](docs/TESTING.md) | Deploy → verify → backfill runbook. |
+| [`syslog_backfill.kql`](paloalto/backfill/syslog_backfill.kql) | One-time backfill of **pre-policy Syslog** PA data into `PaloAlto_*` via the live `*_parse()` functions — tagged, reversible, with the volume levers (`distributed`/`creationTime`). |
 | [`SIDEQUEST.kql`](paloalto/backfill/SIDEQUEST.kql) | CommonSecurityLog → `PaloAlto_*` mappers (THREAT/TRAFFIC) + a tagged, reversible **physical** backfill. Reused as transform-on-read by the union views. |
 | [`historical_union.kql`](paloalto/views/historical_union.kql) | **Query-time union** of the live `PaloAlto_*` tables with CommonSecurityLog history (`PaloAlto_Threat_All()` / `PaloAlto_Traffic_All()`) — zero-copy alternative to physically backfilling TBs. |
 | [`shared/shared.kql`](shared/shared.kql) | Vendor-agnostic helpers: `Shared_HexToLong`, `Shared_SeverityLabel`, `Shared_Direction`, `Shared_IpScope`. Deploy **before** enrichment. |
@@ -41,7 +42,8 @@ paloalto/
   deploy/PaloAlto_CEF.kql        functions + tables + update policies (one ordered file)
   enrichment/enrichment.kql      query-time enrichment views
   views/historical_union.kql     live ∪ CommonSecurityLog history (zero-copy, transform-on-read)
-  ops/validation.kql             monitoring / reconciliation / drift / backfill
+  ops/validation.kql             monitoring / reconciliation / drift checks
+  backfill/syslog_backfill.kql   pre-policy Syslog gap -> PaloAlto_* (live parsers)
   backfill/SIDEQUEST.kql         CSL→PaloAlto_* mappers + physical backfill
 shared/shared.kql                vendor-agnostic helpers (hex, severity, direction, ip-scope)
 ```

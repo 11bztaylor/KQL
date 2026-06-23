@@ -1,0 +1,103 @@
+// =====================================================================================
+// syslog_backfill.kql  --  one-time backfill of PRE-POLICY Palo Alto data from Syslog
+// =====================================================================================
+//
+// WHY
+//   Update policies are FORWARD-ONLY: they only route data ingested AFTER you attached them.
+//   Palo Alto data already sitting in Syslog from BEFORE that cutover never reached the
+//   PaloAlto_* tables. This backfills that gap by re-running the SAME live parsers
+//   (PaloAlto_*_parse) over the historical window and appending the result, tagged so it is
+//   fully reversible.
+//
+//   RAW-Syslog path -- it uses the live *_parse() functions, NOT the *_FromCSL mappers (those
+//   are for CommonSecurityLog). Deep CommonSecurityLog history is handled by the query-time
+//   union views in ../views/historical_union.kql.
+//
+// BOUNDARIES (no double-counting)
+//   Gap window = [earliest PA still in Syslog] .. [cutover = when the policy first wrote].
+//   - Do NOT backfill PAST the cutover: those rows are already in the tables (policy wrote them).
+//   - The early edge is limited by Syslog RETENTION -- you can only recover what's still there.
+//   Run this BEFORE relying on the union views: once these rows land, the live min(TimeGenerated)
+//   moves earlier and PaloAlto_*_All() auto-bounds its CSL side to before them -- so this backfill
+//   and the union history never overlap.
+//
+// SAFETY
+//   - Tagged "backfill:syslog-prepolicy" -> identifiable and fully reversible (section 5).
+//   - Re-running an append DOUBLES the data; drop the tagged extents first.
+//   - Run each statement on its own (a command and a query can't run in one execution).
+//
+// NATIVE LEVERS for volume (busy firewalls can be many GB/day):
+//   distributed=true  -> parallelize the transform across nodes (output > ~1 GB)
+//   creationTime=...  -> stamp extents with the WINDOW date so backfill ages into cold storage
+//                        correctly instead of all landing in hot cache (set per window)
+//   noTruncation=true -> lift the query-result size cap
+//   Each .set-or-append has a 1-HOUR operation timeout -- size windows to finish under it.
+// =====================================================================================
+
+
+// -------------------------------------------------------------------------------------
+// 1) FIND THE GAP WINDOW  -- run both; set START = EarliestSyslogPA, CUTOVER = EarliestLiveEvent.
+// -------------------------------------------------------------------------------------
+// cutover: when the live policy first wrote
+union PaloAlto_Traffic, PaloAlto_Threat, PaloAlto_UserID, PaloAlto
+| summarize Cutover = min(ingestion_time()), EarliestLiveEvent = min(TimeGenerated);
+
+// earliest PA still in Syslog (start of the gap; bounded by Syslog retention)
+Syslog
+| where SyslogMessage has "Palo Alto Networks"
+| summarize EarliestSyslogPA = min(TimeGenerated), LatestSyslogPA = max(TimeGenerated);
+
+
+// -------------------------------------------------------------------------------------
+// 2) SIZE THE GAP  -- per LogType, to decide single-shot vs weekly batches.
+//    More than a few GB per table -> split the window (weekly) and run more, smaller batches.
+// -------------------------------------------------------------------------------------
+PaloAlto_CEF_Parsed()
+| where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01))   // <-- START .. CUTOVER
+| summarize Rows = count(), GB = round(sum(estimate_data_size(*)) / 1024.0 / 1024 / 1024, 2) by LogType
+| order by GB desc;
+
+
+// -------------------------------------------------------------------------------------
+// 3) BACKFILL (writes)  -- one per table, tagged + levered. Set the window + creationTime to
+//    your gap (match creationTime to the window start). For large gaps, narrow to weekly windows
+//    and re-run each block per week. Run each .set-or-append on its own.
+// -------------------------------------------------------------------------------------
+.set-or-append async PaloAlto_Traffic
+    with (distributed=true, noTruncation=true, creationTime='2026-04-01', tags='["backfill:syslog-prepolicy"]') <|
+    PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+
+.set-or-append async PaloAlto_Threat
+    with (distributed=true, noTruncation=true, creationTime='2026-04-01', tags='["backfill:syslog-prepolicy"]') <|
+    PaloAlto_Threat_parse()  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+
+.set-or-append async PaloAlto_UserID
+    with (distributed=true, noTruncation=true, creationTime='2026-04-01', tags='["backfill:syslog-prepolicy"]') <|
+    PaloAlto_UserID_parse()  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+
+.set-or-append async PaloAlto
+    with (distributed=true, noTruncation=true, creationTime='2026-04-01', tags='["backfill:syslog-prepolicy"]') <|
+    PaloAlto_parse()         | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
+
+
+// -------------------------------------------------------------------------------------
+// 4) RECONCILE  -- per table, the two counts should match (THREAT shown; repeat per table).
+// -------------------------------------------------------------------------------------
+PaloAlto_Threat_parse()
+| where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01))
+| count;                                                                       // expected from Syslog
+
+PaloAlto_Threat
+| where extent_tags() has 'backfill:syslog-prepolicy'
+| where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01))
+| count;                                                                       // actually appended
+
+
+// -------------------------------------------------------------------------------------
+// 5) ROLLBACK (if wrong)  -- drops ONLY the tagged backfill extents; live data untouched.
+//    Uncomment to run.
+// -------------------------------------------------------------------------------------
+// .drop extents <| .show table PaloAlto_Traffic extents where tags has 'backfill:syslog-prepolicy'
+// .drop extents <| .show table PaloAlto_Threat  extents where tags has 'backfill:syslog-prepolicy'
+// .drop extents <| .show table PaloAlto_UserID  extents where tags has 'backfill:syslog-prepolicy'
+// .drop extents <| .show table PaloAlto         extents where tags has 'backfill:syslog-prepolicy'
