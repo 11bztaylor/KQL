@@ -1,6 +1,8 @@
 // =====================================================================================
-// Validation, monitoring & backfill for the PaloAlto_* fan-out
+// Validation & monitoring for the PaloAlto_* fan-out
 // Companion to README.md -- these are ad-hoc queries/commands, not deployed objects.
+// (Backfills live in ../backfill/: syslog_backfill.kql for pre-policy Syslog data,
+//  SIDEQUEST.kql for CommonSecurityLog history.)
 //
 // Tables: PaloAlto_Traffic (TRAFFIC), PaloAlto_Threat (THREAT), PaloAlto (everything else).
 // =====================================================================================
@@ -75,46 +77,7 @@ PaloAlto_Traffic
 
 
 // -------------------------------------------------------------------------------------
-// 6) ONE-TIME SYSLOG BACKFILL  -- update policies are FORWARD-ONLY: they only routed data
-//    ingested AFTER you attached them. PA data already in Syslog from BEFORE that cutover is
-//    missing from the PaloAlto_* tables. This backfills that pre-cutover gap by re-running the
-//    SAME live parsers over the historical window, tagged so it is fully reversible.
-//
-//    DO NOT backfill past the cutover -- those rows were already written by the policy, so you
-//    would DUPLICATE them. Backfill window = [earliest Syslog PA] .. [cutover].
-//
-//    (RAW-Syslog path. Historical CommonSecurityLog data uses the *_FromCSL mappers in
-//     backfill/SIDEQUEST.kql instead. Run each statement below on its own.)
-// -------------------------------------------------------------------------------------
-
-// 6a) FIND THE CUTOVER -- when the live policy first wrote. Bound the backfill at/just-before this.
-union PaloAlto_Traffic, PaloAlto_Threat, PaloAlto_UserID, PaloAlto
-| summarize LiveRoutingStarted = min(ingestion_time()), EarliestLiveEvent = min(TimeGenerated);
-
-// 6b) BACKFILL (writes) -- tagged + scoped to the pre-cutover window. Set the window + creationTime.
-//     NATIVE LEVERS for volume:
-//       distributed=true  -> parallelize the transform across nodes (use when output > ~1 GB)
-//       creationTime=...  -> stamp extents with the WINDOW date so backfill ages into cold storage
-//                            correctly instead of all landing in hot cache (set per window)
-//       noTruncation=true -> lift the query-result size cap
-//     Each .set-or-append has a 1-HOUR operation timeout -- size each window to finish under it
-//     (calibrate one window, then scale). Batch by month; run one per table, per window.
-// .set-or-append async PaloAlto_Threat
-//     with (distributed=true, noTruncation=true, creationTime='2026-04-01', tags='["backfill:syslog-prepolicy"]') <|
-//     PaloAlto_Threat_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01));
-//   -- repeat for PaloAlto_Traffic / PaloAlto_UserID / PaloAlto, each with its own window + matching creationTime.
-
-// 6c) RECONCILE (per table, per window) -- the two counts should match.
-// PaloAlto_Traffic_parse() | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01)) | count;   // expected from Syslog
-// PaloAlto_Traffic | where extent_tags() has 'backfill:syslog-prepolicy'
-//                  | where TimeGenerated between (datetime(2026-04-01) .. datetime(2026-05-01)) | count;          // actually appended
-
-// 6d) ROLLBACK (per table) -- drops ONLY the tagged backfill extents; live data is untouched.
-// .drop extents <| .show table PaloAlto_Traffic extents where tags has 'backfill:syslog-prepolicy'
-
-
-// -------------------------------------------------------------------------------------
-// 7) CUSTOM-FIELD LABEL DRIFT  -- the cs*/cn*/flex* column names are baked in from the
+// 6) CUSTOM-FIELD LABEL DRIFT  -- the cs*/cn*/flex* column names are baked in from the
 //    firewall's syslog profile (csNLabel = the field's purpose). If an admin ever
 //    repurposes a slot, the label changes and our static column name becomes wrong.
 //    This returns rows ONLY when a label stops matching the assumption. Empty = healthy.

@@ -6,8 +6,9 @@ Files in this repo:
 |------|---------|
 | [`../paloalto/deploy/PaloAlto_CEF.kql`](../paloalto/deploy/PaloAlto_CEF.kql) | The deployable KQL: parser functions, tables, and update policies. |
 | [`../paloalto/enrichment/enrichment.kql`](../paloalto/enrichment/enrichment.kql) | Query-time enrichment views (geo, labels, scope, reason descriptions, decoded flags). |
-| [`../paloalto/ops/validation.kql`](../paloalto/ops/validation.kql) | Post-deployment monitoring: reconciliation, freshness, catch-all breakdown, parse health, drift check, backfill. |
-| [`../paloalto/backfill/SIDEQUEST.kql`](../paloalto/backfill/SIDEQUEST.kql) | One-off historical THREAT + TRAFFIC backfill from CommonSecurityLog. |
+| [`../paloalto/ops/validation.kql`](../paloalto/ops/validation.kql) | Post-deployment monitoring: reconciliation, freshness, catch-all breakdown, parse health, drift check. |
+| [`../paloalto/backfill/syslog_backfill.kql`](../paloalto/backfill/syslog_backfill.kql) | One-time backfill of pre-policy Syslog PA data into `PaloAlto_*` (live parsers, tagged). |
+| [`../paloalto/backfill/SIDEQUEST.kql`](../paloalto/backfill/SIDEQUEST.kql) | CommonSecurityLog → `PaloAlto_*` THREAT/TRAFFIC mappers (physical backfill or transform-on-read for the union views). |
 
 ---
 
@@ -46,7 +47,7 @@ Once new Palo Alto syslog has flowed in (give it a few minutes):
 
 ## Step 3 (optional) — Backfill existing Syslog data
 
-Update policies don't touch data already in `Syslog`. To populate the tables from history, run the `.set-or-append` templates in `validation.kql` #6, scoped to a time window.
+Update policies don't touch data already in `Syslog`. To populate the tables from the pre-policy gap, run [`../paloalto/backfill/syslog_backfill.kql`](../paloalto/backfill/syslog_backfill.kql) (find the gap window → size → tagged `.set-or-append` per table → reconcile). Deep CommonSecurityLog history is handled separately by the `*_FromCSL` mappers in `SIDEQUEST.kql` or the query-time union views in `../paloalto/views/historical_union.kql`.
 
 ---
 
