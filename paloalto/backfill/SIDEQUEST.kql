@@ -1,17 +1,23 @@
 // =====================================================================================
-// SIDEQUEST  --  backfill historical Palo Alto THREAT logs into PaloAlto_Threat
+// SIDEQUEST  --  backfill historical Palo Alto logs (THREAT + TRAFFIC) from CommonSecurityLog
 // =====================================================================================
 //
 // SCENARIO
 //   A Sentinel *Search Job* over CommonSecurityLog (archived, ~1 year back) produced a
-//   CEF results table, already landed in ADX, containing ONLY Palo Alto THREAT logs in the
-//   standard CommonSecurityLog schema. We want those historical rows in the same
-//   PaloAlto_Threat table the live update policy writes to.
+//   CEF results table, already landed in ADX, in the standard CommonSecurityLog schema. We
+//   want those historical rows in the same PaloAlto_* tables the live update policies write to.
+//   Section 1 maps THREAT rows; section 1b maps TRAFFIC rows. (USERID is intentionally
+//   omitted -- user-id mapping logs are rarely forwarded via CEF; confirm with the Activity
+//   breakdown below before assuming you need it.)
 //
 //   This is NOT the raw-Syslog path: CommonSecurityLog is already parsed into columns, so
 //   we map column-to-column (not split a CEF header). The PAN-specific extras that
 //   CommonSecurityLog didn't map to a column live in its AdditionalExtensions string, which
 //   we preserve in UnparsedFields (and pull RuleUUID / URLCategoryList out of).
+//
+//   PAN's log TYPE ($type) lands in CommonSecurityLog's `Activity` column, its $subtype in
+//   `DeviceEventClassID`. Confirm what you actually have before backfilling:
+//       CommonSecurityLog | where DeviceVendor has "Palo Alto" | summarize count() by Activity
 //
 // SAFETY
 //   - The backfill is written with an extent TAG ("backfill:csl-searchjob") so it is
@@ -21,8 +27,10 @@
 //     rows that the update policy already wrote.
 //
 // HOW TO USE
-//   1. Set the two placeholders below (source table name + date range).
-//   2. Run section 1 (create the mapper), then section 2 (PREVIEW - no write) and eyeball.
+//   1. Pick the mapper for the log type you're backfilling (THREAT = section 1,
+//      TRAFFIC = section 1b) and set the two placeholders in section 2/3.
+//   2. Run section 2 (PREVIEW - no write) and eyeball ~100 rows. If a column name doesn't
+//      exist in your CSL schema version, the preview fails here -- adjust and retry.
 //   3. Run section 3 (the tagged backfill).
 //   4. Reconcile (section 4). If wrong, roll back (section 5) and retry.
 // =====================================================================================
@@ -89,9 +97,75 @@
 
 
 // -------------------------------------------------------------------------------------
+// 1b) MAPPER  -- CommonSecurityLog-shaped PA TRAFFIC rows  ->  PaloAlto_Traffic schema.
+//    Column order matches PaloAlto_Traffic exactly (required by .set-or-append).
+//    cn1/cn2/cn3 use coalesce(FieldDeviceCustomNumberN, DeviceCustomNumberN) for schema drift;
+//    column_ifexists() guards columns that vary across CommonSecurityLog versions.
+//    NOTE: StartTime is a string in PaloAlto_Traffic but a datetime in CommonSecurityLog, so
+//    backfilled rows carry an ISO timestamp string rather than PAN's raw "Mon dd yyyy ..."
+//    format -- a documented, harmless difference for historical data.
+// -------------------------------------------------------------------------------------
+.create-or-alter function
+  with (docstring = 'SIDEQUEST: map CommonSecurityLog-shaped Palo Alto TRAFFIC rows to the PaloAlto_Traffic schema for historical backfill', folder = 'PaloAlto/SIDEQUEST')
+  PaloAlto_Traffic_FromCSL(T:(*)) {
+    T
+    | where DeviceVendor has "Palo Alto"
+    | where Activity == "TRAFFIC"                  // PAN $type lands in CSL Activity
+    | project
+        TimeGenerated,
+        DeviceVendor                 = tostring(DeviceVendor),
+        DeviceProduct                = tostring(DeviceProduct),
+        DeviceVersion                = tostring(DeviceVersion),
+        LogType                      = "TRAFFIC",
+        SubType                      = tostring(DeviceEventClassID),   // $subtype: drop/start/end/deny
+        LogSeverity                  = tostring(LogSeverity),
+        Computer                     = tostring(Computer),
+        DeviceName                   = tostring(DeviceName),
+        FirewallSerial               = tostring(DeviceExternalID),
+        SourceIP                     = tostring(SourceIP),
+        SourcePort                   = toint(SourcePort),
+        DestinationIP                = tostring(DestinationIP),
+        DestinationPort              = toint(DestinationPort),
+        Protocol                     = tostring(Protocol),
+        ApplicationProtocol          = tostring(ApplicationProtocol),
+        DeviceAction                 = tostring(DeviceAction),
+        SourceUserName               = tostring(SourceUserName),
+        DestinationUserName          = tostring(DestinationUserName),
+        SourceTranslatedAddress      = tostring(SourceTranslatedAddress),
+        SourceTranslatedPort         = toint(SourceTranslatedPort),
+        DestinationTranslatedAddress = tostring(DestinationTranslatedAddress),
+        DestinationTranslatedPort    = toint(DestinationTranslatedPort),
+        DeviceInboundInterface       = tostring(DeviceInboundInterface),
+        DeviceOutboundInterface      = tostring(DeviceOutboundInterface),
+        ReceivedBytes                = tolong(ReceivedBytes),         // in
+        SentBytes                    = tolong(SentBytes),             // out
+        TotalBytes                   = tolong(column_ifexists("FlexNumber1", int(null))),  // flexNumber1=Total bytes
+        PacketCount                  = toint(coalesce(tolong(column_ifexists("FieldDeviceCustomNumber2", long(null))), tolong(DeviceCustomNumber2))),  // cn2=Packets
+        EventCount                   = toint(column_ifexists("EventCount", int(null))),    // cnt
+        ElapsedTimeSec               = toint(coalesce(tolong(column_ifexists("FieldDeviceCustomNumber3", long(null))), tolong(DeviceCustomNumber3))),  // cn3=Elapsed time
+        SessionID                    = toint(coalesce(tolong(column_ifexists("FieldDeviceCustomNumber1", long(null))), tolong(DeviceCustomNumber1))),  // cn1=SessionID
+        SequenceNumber               = iff(isnotempty(tostring(column_ifexists("ExtID", ""))), tostring(column_ifexists("ExtID", "")), tostring(ExternalID)),
+        RuleName                     = tostring(DeviceCustomString1),  // cs1Label=Rule
+        URLCategory                  = tostring(DeviceCustomString2),  // cs2Label=URL Category
+        SourceZone                   = tostring(DeviceCustomString4),  // cs4Label=Source Zone
+        DestinationZone              = tostring(DeviceCustomString5),  // cs5Label=Destination Zone
+        LogProfile                   = tostring(DeviceCustomString6),  // cs6Label=LogProfile
+        Flags                        = tostring(FlexString1),          // flexString1Label=Flags
+        RuleUUID                     = extract(@'PanOSRuleUUID=([0-9a-fA-F\-]{8,})', 1, tostring(AdditionalExtensions)),
+        Reason                       = tostring(Reason),               // reason
+        Category                     = tostring(DeviceEventCategory),  // cat
+        StartTime                    = tostring(column_ifexists("StartTime", datetime(null))),  // CSL datetime -> string
+        ReceiptTime                  = tostring(ReceiptTime),
+        UnparsedFields               = bag_pack("AdditionalExtensions", AdditionalExtensions)
+  }
+
+
+// -------------------------------------------------------------------------------------
 // 2) PREVIEW (no write)  -- EDIT the two placeholders, then run and sanity-check ~100 rows.
 //        <SourceSearchJobTable>  = your CommonSecurityLog-shaped search-job table
 //        date range              = the window you are backfilling
+//    Sections 2-5 are written for THREAT. For TRAFFIC, swap PaloAlto_Threat_FromCSL ->
+//    PaloAlto_Traffic_FromCSL and the target table PaloAlto_Threat -> PaloAlto_Traffic.
 // -------------------------------------------------------------------------------------
 PaloAlto_Threat_FromCSL(
     <SourceSearchJobTable>
