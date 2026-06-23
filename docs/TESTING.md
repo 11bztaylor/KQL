@@ -7,7 +7,7 @@ Files in this repo:
 | [`../paloalto/deploy/PaloAlto_CEF.kql`](../paloalto/deploy/PaloAlto_CEF.kql) | The deployable KQL: parser functions, tables, and update policies. |
 | [`../paloalto/enrichment/enrichment.kql`](../paloalto/enrichment/enrichment.kql) | Query-time enrichment views (geo, labels, scope, reason descriptions, decoded flags). |
 | [`../paloalto/ops/validation.kql`](../paloalto/ops/validation.kql) | Post-deployment monitoring: reconciliation, freshness, catch-all breakdown, parse health, drift check, backfill. |
-| [`../paloalto/backfill/SIDEQUEST.kql`](../paloalto/backfill/SIDEQUEST.kql) | One-off historical THREAT backfill from CommonSecurityLog. |
+| [`../paloalto/backfill/SIDEQUEST.kql`](../paloalto/backfill/SIDEQUEST.kql) | One-off historical THREAT + TRAFFIC backfill from CommonSecurityLog. |
 
 ---
 
