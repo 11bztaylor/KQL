@@ -1,0 +1,24 @@
+let LogHeader = Syslog
+| where Computer in~ (BV_VMWARE_ESXI_HOST_LIST) 
+    or Computer matches regex (BV_VMWARE_ESXI_HOST_REGEX) 
+    or Computer has_any ("esxi", "vmhost")
+// Fix #1: handle hex PIDs, ESXi 8.x In(N)/Er(N) prefix, and cpu: thread IDs
+| extend Parser = extract_all(
+    @"^(?:(?:In|Er|Wa|No|De)\(\d+\)\s)?(\w+)?\s?(\w+)\[([0-9a-fA-F:]+)\]\s([\s\S]+)",
+    dynamic([1,2,3,4]), 
+    SyslogMessage)
+| mv-expand Parser
+| extend Substring = tostring(Parser[3])
+| project-away Parser;
+LogHeader
+| extend 
+    // Fix #2: character class was inverted — remove the ^
+    Sub      = extract(@"sub=([\w\d\(\)\-\.]+)\]?", 1, Substring),
+    // Fix #3: opID is fine but tighten the terminator
+    OpId     = extract(@"opID=([\w\d\(\)\-@\.]+?)[\s\]]", 1, Substring),
+    // Fix #4: ESXi auth uses 'for user@ip' not 'user=' key-value
+    UserName = coalesce(
+        extract(@"for\s+'?(\S+?)(?:@[\d\.]+)?'?\s", 1, Substring),
+        extract(@"(?:UserLoginSessionEvent|logged in).*?(\w+)@([\d\.]+)", 1, Substring)
+    )
+| extend Message = extract(@"\[[\s\S]+\]\s([\s\S]+)", 2, Substring)
