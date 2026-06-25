@@ -1,0 +1,56 @@
+// MMA vs AMA Agent Inventory
+// Lookback: 48h to catch machines that might miss a single heartbeat cycle
+let Lookback = 48h;
+let MMA = Heartbeat
+    | where TimeGenerated > ago(Lookback)
+    | where Category == "Direct Agent"
+    | summarize 
+        MMA_LastSeen       = max(TimeGenerated),
+        MMA_HeartbeatCount = count(),
+        MMA_OSType         = any(OSType),
+        MMA_OSName         = any(OSName),
+        MMA_Version        = any(Version),
+        MMA_ResourceGroup  = any(ResourceGroup),
+        MMA_SubscriptionId = any(SubscriptionId),
+        MMA_ComputerIP     = any(ComputerIP)
+      by Computer;
+let AMA = Heartbeat
+    | where TimeGenerated > ago(Lookback)
+    | where Category == "Azure Monitor Agent"
+    | summarize 
+        AMA_LastSeen       = max(TimeGenerated),
+        AMA_HeartbeatCount = count(),
+        AMA_Version        = any(Version)
+      by Computer;
+MMA
+| join kind=fullouter AMA on Computer
+| extend ComputerName = coalesce(Computer, Computer1)
+| project-away Computer, Computer1
+| extend AgentStatus = case(
+    isnotempty(MMA_LastSeen) and isnotempty(AMA_LastSeen), "⚠️ BOTH (Dual-Homed)",
+    isnotempty(MMA_LastSeen) and isempty(AMA_LastSeen),   "🔴 MMA Only (Migrate)",
+    isempty(MMA_LastSeen) and isnotempty(AMA_LastSeen),   "✅ AMA Only (Complete)",
+    "❓ Unknown"
+)
+| extend MigrationPriority = case(
+    AgentStatus == "🔴 MMA Only (Migrate)", 1,
+    AgentStatus == "⚠️ BOTH (Dual-Homed)",  2,
+    AgentStatus == "✅ AMA Only (Complete)", 3,
+    4
+)
+| project
+    ComputerName,
+    AgentStatus,
+    MigrationPriority,
+    MMA_LastSeen,
+    AMA_LastSeen,
+    MMA_HeartbeatCount,
+    AMA_HeartbeatCount,
+    MMA_Version,
+    AMA_Version,
+    MMA_OSType,
+    MMA_OSName,
+    MMA_ResourceGroup,
+    MMA_SubscriptionId,
+    MMA_ComputerIP
+| sort by MigrationPriority asc, ComputerName asc
