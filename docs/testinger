@@ -1,0 +1,11 @@
+let a = datetime(2026-03-20T12:00:00Z);   // any fully-covered hour
+let b = datetime(2026-03-20T13:00:00Z);
+PaloAlto_Threat_parse()
+| where TimeGenerated between (a .. b)
+| project pTime = TimeGenerated, k = SequenceNumber
+| join kind=inner (
+    PaloAlto_Threat | where TimeGenerated between (a .. b) | project tTime = TimeGenerated, k = SequenceNumber
+  ) on k
+| extend deltaMs = (pTime - tTime) / 1ms
+| summarize rows = count() by deltaMs
+| order by rows desc
